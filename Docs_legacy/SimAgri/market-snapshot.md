@@ -1,0 +1,173 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5] [cursor=pointer]: 🌾 SimAgri
+    - generic [ref=e6]:
+      - generic [ref=e7]: Admin
+      - generic [ref=e8]:
+        - generic [ref=e9]: 💰 99 281 756,95€
+        - generic [ref=e10]: ⚡ 970.25/8h
+    - navigation [ref=e11]:
+      - link "🏠 Mon bureau" [ref=e12] [cursor=pointer]:
+        - /url: /
+        - generic [ref=e13]: 🏠
+        - generic [ref=e14]: Mon bureau
+      - link "🌾 Parcelles" [ref=e15] [cursor=pointer]:
+        - /url: /parcels
+        - generic [ref=e16]: 🌾
+        - generic [ref=e17]: Parcelles
+      - link "🏗️ Bâtiments" [ref=e18] [cursor=pointer]:
+        - /url: /buildings
+        - generic [ref=e19]: 🏗️
+        - generic [ref=e20]: Bâtiments
+      - link "🐔 Élevage" [ref=e21] [cursor=pointer]:
+        - /url: /animals
+        - generic [ref=e22]: 🐔
+        - generic [ref=e23]: Élevage
+      - link "🥚 Productions" [ref=e24] [cursor=pointer]:
+        - /url: /eggs
+        - generic [ref=e25]: 🥚
+        - generic [ref=e26]: Productions
+      - link "🏪 Marché" [ref=e27] [cursor=pointer]:
+        - /url: /market
+        - generic [ref=e28]: 🏪
+        - generic [ref=e29]: Marché
+      - link "🚜 Matériel" [ref=e30] [cursor=pointer]:
+        - /url: /equipment
+        - generic [ref=e31]: 🚜
+        - generic [ref=e32]: Matériel
+      - generic:
+        - generic: 🚛
+        - generic: Transport
+      - generic:
+        - generic: 💬
+        - generic: Messages
+      - generic:
+        - generic: 🏆
+        - generic: Classements
+      - link "⚙️ Admin" [ref=e35] [cursor=pointer]:
+        - /url: /admin
+        - generic [ref=e36]: ⚙️
+        - generic [ref=e37]: Admin
+    - button "🚪 Déconnexion" [ref=e38] [cursor=pointer]:
+      - generic [ref=e39]: 🚪
+      - generic [ref=e40]: Déconnexion
+  - main [ref=e41]:
+    - generic [ref=e42]:
+      - heading "Marché" [level=1] [ref=e45]
+      - navigation [ref=e46]:
+        - button "Coopérative" [ref=e47]
+        - button "Grossiste animaux" [ref=e48]
+      - generic [ref=e49]:
+        - generic [ref=e50]:
+          - button "Conventionnel" [ref=e51] [cursor=pointer]
+          - button "Bio" [ref=e52] [cursor=pointer]
+        - table [ref=e53]:
+          - rowgroup [ref=e54]:
+            - row "Produit Espèce Cours (€/t) Annonces" [ref=e55]:
+              - columnheader "Produit" [ref=e56]
+              - columnheader "Espèce" [ref=e57]
+              - columnheader "Cours (€/t)" [ref=e58]
+              - columnheader "Annonces" [ref=e59]
+              - columnheader [ref=e60]
+          - rowgroup [ref=e61]:
+            - row "▾ Paille et foin 2 produit(s)" [ref=e71] [cursor=pointer]:
+              - cell "▾ Paille et foin 2 produit(s)" [ref=e72]:
+                - generic [ref=e64]: ▾
+                - text: Paille et foin 2 produit(s)
+            - row "Foin de prairie (balles 250kg) 100.00 — ▸" [ref=e73] [cursor=pointer]:
+              - cell "Foin de prairie (balles 250kg)" [ref=e74]
+              - cell [ref=e75]
+              - cell "100.00" [ref=e76]
+              - cell "—" [ref=e77]
+              - cell "▸" [ref=e78]
+            - row "Paille (balles 250kg) 60.00 — ▸" [ref=e79] [cursor=pointer]:
+              - cell "Paille (balles 250kg)" [ref=e80]
+              - cell [ref=e81]
+              - cell "60.00" [ref=e82]
+              - cell "—" [ref=e83]
+              - cell "▸" [ref=e84]
+            - row "▾ Production 4 produit(s)" [ref=e85] [cursor=pointer]:
+              - cell "▾ Production 4 produit(s)" [ref=e86]:
+                - generic [ref=e67]: ▾
+                - text: Production 4 produit(s)
+            - row "Œuf calibre L volaille 0.00 — ▸" [ref=e87] [cursor=pointer]:
+              - cell "Œuf calibre L" [ref=e88]
+              - cell "volaille" [ref=e89]:
+                - generic [ref=e90]: volaille
+              - cell "0.00" [ref=e91]
+              - cell "—" [ref=e92]
+              - cell "▸" [ref=e93]
+            - row "Œuf calibre M volaille 0.00 — ▸" [ref=e94] [cursor=pointer]:
+              - cell "Œuf calibre M" [ref=e95]
+              - cell "volaille" [ref=e96]:
+                - generic [ref=e97]: volaille
+              - cell "0.00" [ref=e98]
+              - cell "—" [ref=e99]
+              - cell "▸" [ref=e100]
+            - row "Œuf calibre S volaille 0.00 — ▸" [ref=e101] [cursor=pointer]:
+              - cell "Œuf calibre S" [ref=e102]
+              - cell "volaille" [ref=e103]:
+                - generic [ref=e104]: volaille
+              - cell "0.00" [ref=e105]
+              - cell "—" [ref=e106]
+              - cell "▸" [ref=e107]
+            - row "Œuf calibre XL volaille 0.00 — ▸" [ref=e108] [cursor=pointer]:
+              - cell "Œuf calibre XL" [ref=e109]
+              - cell "volaille" [ref=e110]:
+                - generic [ref=e111]: volaille
+              - cell "0.00" [ref=e112]
+              - cell "—" [ref=e113]
+              - cell "▸" [ref=e114]
+            - row "▾ Ration 7 produit(s)" [ref=e115] [cursor=pointer]:
+              - cell "▾ Ration 7 produit(s)" [ref=e116]:
+                - generic [ref=e70]: ▾
+                - text: Ration 7 produit(s)
+            - row "Aliment complet porc porcin 320.00 — ▸" [ref=e117] [cursor=pointer]:
+              - cell "Aliment complet porc" [ref=e118]
+              - cell "porcin" [ref=e119]:
+                - generic [ref=e120]: porcin
+              - cell "320.00" [ref=e121]
+              - cell "—" [ref=e122]
+              - cell "▸" [ref=e123]
+            - row "Foin + avoine cheval 200.00 — ▸" [ref=e124] [cursor=pointer]:
+              - cell "Foin + avoine" [ref=e125]
+              - cell "cheval" [ref=e126]:
+                - generic [ref=e127]: cheval
+              - cell "200.00" [ref=e128]
+              - cell "—" [ref=e129]
+              - cell "▸" [ref=e130]
+            - row "Foin caprin caprin 150.00 — ▸" [ref=e131] [cursor=pointer]:
+              - cell "Foin caprin" [ref=e132]
+              - cell "caprin" [ref=e133]:
+                - generic [ref=e134]: caprin
+              - cell "150.00" [ref=e135]
+              - cell "—" [ref=e136]
+              - cell "▸" [ref=e137]
+            - row "Foin + complément bovin bovin 180.00 — ▸" [ref=e138] [cursor=pointer]:
+              - cell "Foin + complément bovin" [ref=e139]
+              - cell "bovin" [ref=e140]:
+                - generic [ref=e141]: bovin
+              - cell "180.00" [ref=e142]
+              - cell "—" [ref=e143]
+              - cell "▸" [ref=e144]
+            - row "Foin ovin ovin 150.00 — ▸" [ref=e145] [cursor=pointer]:
+              - cell "Foin ovin" [ref=e146]
+              - cell "ovin" [ref=e147]:
+                - generic [ref=e148]: ovin
+              - cell "150.00" [ref=e149]
+              - cell "—" [ref=e150]
+              - cell "▸" [ref=e151]
+            - row "Granulés lapin lapin 400.00 — ▸" [ref=e152] [cursor=pointer]:
+              - cell "Granulés lapin" [ref=e153]
+              - cell "lapin" [ref=e154]:
+                - generic [ref=e155]: lapin
+              - cell "400.00" [ref=e156]
+              - cell "—" [ref=e157]
+              - cell "▸" [ref=e158]
+            - row "Ration volaille volaille 240.00 — ▸" [ref=e159] [cursor=pointer]:
+              - cell "Ration volaille" [ref=e160]
+              - cell "volaille" [ref=e161]:
+                - generic [ref=e162]: volaille
+              - cell "240.00" [ref=e163]
+              - cell "—" [ref=e164]
+              - cell "▸" [ref=e165]

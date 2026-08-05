@@ -1,0 +1,16 @@
+{
+  "package_name": "agriva_export_package",
+  "version": "1.0",
+  "files": [
+    "agriva_document_complet_long.md",
+    "agriva_decisions_log.md",
+    "agriva_index.md",
+    "agriva_agents_roles.md",
+    "agriva_v1_core_design.md",
+    "agriva_v1_systems_farming.md",
+    "agriva_v1_economy_markets.md",
+    "agriva_v1_ui_onboarding.md",
+    "agriva_v1_social_meta.md"
+  ],
+  "notes": "Use agriva_index.md as the entry point. Load agriva_agents_roles.md for multi-agent orchestration."
+}

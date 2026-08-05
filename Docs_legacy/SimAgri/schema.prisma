@@ -1,0 +1,247 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
+}
+
+// ─── Auth ────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  name         String
+  role         String   @default("user")
+  isBanned     Boolean  @default(false) @map("is_banned")
+  createdAt    DateTime @default(now()) @map("created_at")
+  players      Player[]
+
+  @@map("users")
+}
+
+// ─── Serveurs & Géographie ───────────────────────────
+
+model Server {
+  id            Int      @id @default(autoincrement())
+  name          String
+  slug          String   @unique
+  country       String
+  difficulty    Int
+  maxParcelSize Int      @default(50) @map("max_parcel_size")
+  isExpert      Boolean  @default(false) @map("is_expert")
+  config        Json     @default("{}")
+  regions       Region[]
+  players       Player[]
+  gameTime      GameTime?
+
+  @@map("servers")
+}
+
+model Region {
+  id        Int          @id @default(autoincrement())
+  serverId  Int          @map("server_id")
+  name      String
+  meteoZone String       @map("meteo_zone")
+  server    Server       @relation(fields: [serverId], references: [id])
+  departments Department[]
+  players   Player[]
+
+  @@map("regions")
+}
+
+model Department {
+  id       Int    @id @default(autoincrement())
+  regionId Int    @map("region_id")
+  name     String
+  region   Region @relation(fields: [regionId], references: [id])
+
+  @@map("departments")
+}
+
+// ─── Temps de jeu ────────────────────────────────────
+
+model GameTime {
+  serverId      Int    @id @map("server_id")
+  currentDay    Int    @default(1) @map("current_day")
+  currentMonth  Int    @default(1) @map("current_month")
+  currentSeason String @default("printemps") @map("current_season")
+  seasonNumber  Int    @default(1) @map("season_number")
+  server        Server @relation(fields: [serverId], references: [id])
+
+  @@map("game_time")
+}
+
+// ─── Joueurs ─────────────────────────────────────────
+
+model Player {
+  id             String     @id @default(uuid())
+  userId         String     @map("user_id")
+  serverId       Int        @map("server_id")
+  name           String
+  regionId       Int        @map("region_id")
+  zone           Int
+  balance        Decimal    @default(100000) @db.Decimal(15, 2)
+  savings        Decimal    @default(0) @db.Decimal(15, 2)
+  hoursToday    Decimal    @default(8) @db.Decimal(5, 2) @map("hours_today")")
+  hoursMax     Decimal    @default(8) @db.Decimal(5, 2) @map("hours_max")")
+  simpass        Boolean    @default(false)
+  simpassExpires DateTime?  @map("simpass_expires")
+  seniorityDays  Int        @default(0) @map("seniority_days")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  user           User       @relation(fields: [userId], references: [id])
+  server         Server     @relation(fields: [serverId], references: [id])
+  region         Region     @relation(fields: [regionId], references: [id])
+  buildings      Building[]
+  equipment      Equipment[]
+  parcels        Parcel[]
+  animals        Animal[]
+
+  @@unique([userId, serverId])
+  @@index([serverId])
+  @@map("players")
+}
+
+// ─── Bâtiments ───────────────────────────────────────
+
+model Building {
+  id             String    @id @default(uuid())
+  playerId       String    @map("player_id")
+  type           String
+  size           Decimal   @db.Decimal(10, 2)
+  equipmentLevel Int       @default(1) @map("equipment_level")
+  wear           Decimal   @default(0) @db.Decimal(5, 2)
+  isBuilding     Boolean   @default(false) @map("is_building")
+  buildEndDate   DateTime? @map("build_end_date")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  player         Player    @relation(fields: [playerId], references: [id])
+  storage        Storage[]
+  animals        Animal[]
+
+  @@index([playerId])
+  @@map("buildings")
+}
+
+model Storage {
+  id         String  @id @default(uuid())
+  buildingId String  @map("building_id")
+  itemType   String  @map("item_type")
+  quantity   Decimal @default(0) @db.Decimal(15, 2)
+  quality    Int     @default(2)
+  isBio      Boolean @default(false) @map("is_bio")
+  building   Building @relation(fields: [buildingId], references: [id])
+
+  @@index([buildingId])
+  @@map("storage")
+}
+
+// ─── Matériel ────────────────────────────────────────
+
+model Equipment {
+  id           String    @id @default(uuid())
+  playerId     String    @map("player_id")
+  definitionId Int       @map("definition_id")
+  wear         Decimal   @default(0) @db.Decimal(5, 2)
+  paUsed       Int       @default(0) @map("pa_used")
+  isSheltered  Boolean   @default(false) @map("is_sheltered")
+  buildingId   String?   @map("building_id")
+  hasGps       Boolean   @default(false) @map("has_gps")
+  hasFrontLift Boolean   @default(false) @map("has_front_lift")
+  insuranceUntil DateTime? @map("insurance_until")
+  isBroken     Boolean   @default(false) @map("is_broken")
+  brokenUntil  DateTime? @map("broken_until")
+  boughtAt     DateTime  @default(now()) @map("bought_at")
+  buyPrice     Decimal   @db.Decimal(12, 2) @map("buy_price")
+  player       Player    @relation(fields: [playerId], references: [id])
+
+  @@index([playerId])
+  @@map("equipment")
+}
+
+// ─── Parcelles ───────────────────────────────────────
+
+model Parcel {
+  id           String   @id @default(uuid())
+  playerId     String   @map("player_id")
+  serverId     Int      @map("server_id")
+  departmentId Int      @map("department_id")
+  zone         Int
+  type         String   @default("champ")
+  sizeHa       Decimal  @db.Decimal(6, 2) @map("size_ha")
+  soilQuality  Int      @default(2) @map("soil_quality")
+  isBio        Boolean  @default(false) @map("is_bio")
+  boughtAt     DateTime @default(now()) @map("bought_at")
+  buyPrice     Decimal  @db.Decimal(12, 2) @map("buy_price")
+  player       Player   @relation(fields: [playerId], references: [id])
+  crops        Crop[]
+  soil         ParcelSoil?
+
+  @@index([playerId, serverId])
+  @@map("parcels")
+}
+
+model ParcelSoil {
+  parcelId  String  @id @map("parcel_id")
+  azote     Decimal @default(50) @db.Decimal(8, 2)
+  phosphore Decimal @default(50) @db.Decimal(8, 2)
+  potassium Decimal @default(50) @db.Decimal(8, 2)
+  calcium   Decimal @default(50) @db.Decimal(8, 2)
+  magnesium Decimal @default(50) @db.Decimal(8, 2)
+  soufre    Decimal @default(50) @db.Decimal(8, 2)
+  stones    Boolean @default(false)
+  parcel    Parcel  @relation(fields: [parcelId], references: [id])
+
+  @@map("parcel_soil")
+}
+
+model Crop {
+  id          String   @id @default(uuid())
+  parcelId    String   @map("parcel_id")
+  cultureType String   @map("culture_type")
+  technique   String   @default("traditionnelle")
+  seedType    String   @default("GP") @map("seed_type")
+  sownAt      DateTime @map("sown_at")
+  growthPct   Decimal  @default(0) @db.Decimal(5, 2) @map("growth_pct")
+  waterGauge  Decimal  @default(50) @db.Decimal(5, 2) @map("water_gauge")
+  sunGauge    Decimal  @default(50) @db.Decimal(5, 2) @map("sun_gauge")
+  fertilized  Boolean  @default(false)
+  manured     Boolean  @default(false)
+  rolled      Boolean  @default(false)
+  harvested   Boolean  @default(false)
+  quality     Int?
+  parcel      Parcel   @relation(fields: [parcelId], references: [id])
+
+  @@index([parcelId])
+  @@map("crops")
+}
+
+// ─── Animaux ─────────────────────────────────────────
+
+model Animal {
+  id           String    @id @default(uuid())
+  playerId     String    @map("player_id")
+  species      String
+  raceSlug     String    @map("race_slug")
+  sex          String
+  name         String?
+  birthDate    DateTime  @map("birth_date")
+  weight       Decimal   @db.Decimal(8, 2)
+  health       Decimal   @default(100) @db.Decimal(5, 2)
+  hunger       Decimal   @default(100) @db.Decimal(5, 2)
+  locationType String    @default("building") @map("location_type")
+  buildingId   String?   @map("building_id")
+  parcelId     String?   @map("parcel_id")
+  isPregnant   Boolean   @default(false) @map("is_pregnant")
+  pregnantSince DateTime? @map("pregnant_since")
+  lastBirth    DateTime? @map("last_birth")
+  genetics     Json      @default("{}")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  player       Player    @relation(fields: [playerId], references: [id])
+  building     Building? @relation(fields: [buildingId], references: [id])
+
+  @@index([playerId])
+  @@map("animals")
+}

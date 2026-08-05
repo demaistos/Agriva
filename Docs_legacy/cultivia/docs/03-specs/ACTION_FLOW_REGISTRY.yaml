@@ -1,0 +1,5637 @@
+flows:
+# NOTE: trigger.step = identifiant logique, PAS ordre exécution. Voir GAME_SYSTEMS §1.4 pour l ordre réel du tick.
+- id: F001
+  name: Construire un bâtiment
+  sprint: 3
+  status: spec
+  trigger:
+    type: button
+    label: Construire {prix} €
+    page: /buildings/buy
+    states:
+      active: balance >= prix AND ht >= 2.0
+      disabled:
+      - condition: balance < prix
+        tooltip: Solde insuffisant (besoin {prix}€, reste {balance}€)
+      - condition: ht < 2.0
+        tooltip: HT insuffisants (besoin 2.0, reste {ht})
+  chain:
+  - step: frontend_validate
+    checks:
+    - size > 0
+    - balance >= cost
+    - ht >= 2.0
+  - step: generate_idempotency_key
+  - step: disable_button_spinner
+  - step: api_call
+    method: POST
+    route: /api/buildings
+    headers:
+    - Authorization
+    - X-Idempotency-Key
+    body: '{ building_type_id: int, size: number, name: string }'
+  - step: backend_idempotency_check
+  - step: backend_auth_jwt
+  - step: backend_load_building_type
+  - step: backend_calculate_cost
+    formula: size × base_cost_per_unit
+  - step: backend_transaction
+    sql:
+    - SELECT balance, ht_today FROM player WHERE id=$1 FOR UPDATE
+    - CHECK balance >= cost AND ht_today >= 2.0
+    - UPDATE player SET balance = balance - $cost, ht_today = ht_today - 2.0
+    - INSERT INTO building (...) RETURNING id
+    - INSERT INTO building_animal_capacity (if housing type)
+    - INSERT INTO ledger (category='purchase')
+  - step: backend_cache_idempotency
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+    - building_alert
+  - step: frontend_toast
+    message: 🏗️ {type} construit ! ({size} {unit})
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  - step: frontend_redirect
+    to: /buildings
+  depends_on: []
+  tests:
+  - GIVEN 100k€ 40HT WHEN build stabulation 20 THEN balance=96k ht=38
+  - GIVEN 0HT WHEN build THEN 400 HT insuffisants
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - kit:eleveur|cultivateur|polyvalent
+- id: F002
+  name: Acheter un animal au Marché Central
+  sprint: 3
+  status: spec
+  trigger:
+    type: button
+    label: Acheter {prix} €
+    page: /market/animals
+    states:
+      active: balance >= total_cost AND ht >= ht_cost AND building_has_space AND has_trailer AND has_tractor AND hvc >= hvc_cost
+      disabled:
+      - condition: balance < total_cost
+        tooltip: Solde insuffisant ({total_cost} € = {prix} € + {transport_cost} € transport)
+      - condition: ht < ht_cost
+        tooltip: HT insuffisants (besoin {ht_cost}, reste {ht})
+      - condition: no building with space
+        tooltip: Aucun bâtiment avec place disponible
+      - condition: no tractor or broken
+        tooltip: Tracteur fonctionnel requis
+      - condition: no trailer or broken
+        tooltip: Bétaillère fonctionnelle requise (bovins/ovins/caprins/porcins)
+      - condition: no utilitaire or broken
+        tooltip: Utilitaire fonctionnel requis (volailles/pintades/lapins)
+      - condition: no van or broken
+        tooltip: Van fonctionnel requis (chevaux)
+      - condition: hvc < hvc_cost
+        tooltip: Carburant HVC insuffisant (besoin {hvc_cost}L)
+      - condition: daily_purchase_limit_reached
+        tooltip: Limite atteinte (max 5 animaux de cette espèce par jour au Marché Central)
+  chain:
+  - step: frontend_validate
+    checks:
+    - building_has_space
+    - balance >= total_cost
+    - ht >= ht_cost
+    - has_tractor
+    - has_trailer
+    - hvc >= hvc_cost
+  - step: generate_idempotency_key
+  - step: disable_button_spinner
+  - step: api_call
+    method: POST
+    route: /api/animals/buy
+    body: '{ breed_id: int, life_stage: string, sex: string, building_id: uuid }'
+  - step: backend_calculate_transport
+    logic: distance_km = haversine(market_prefecture, player_prefecture), transport_cost = distance_km × 0.50, hvc_cost =
+      distance_km × 0.15, ht_cost = 0.5 + (distance_km / 100), wear_increase = distance_km × 0.02
+  - step: backend_idempotency_check
+  - step: backend_auth_jwt
+  - step: backend_transaction
+    sql:
+    - SELECT balance, ht_today FROM player FOR UPDATE
+    - SELECT animal_count, max_capacity FROM building_animal_capacity FOR UPDATE
+    - SELECT id, wear FROM vehicle WHERE type='tractor' AND NOT is_broken FOR UPDATE
+    - SELECT id, wear FROM vehicle WHERE type='trailer' AND NOT is_broken FOR UPDATE
+    - SELECT quantity FROM inventory WHERE product='hvc' FOR UPDATE
+    - CHECK balance >= price + transport_cost AND ht >= ht_cost AND count < capacity AND hvc >= hvc_cost
+    - UPDATE player SET balance -= (price + transport_cost), ht_today -= ht_cost
+    - UPDATE inventory SET quantity -= hvc_cost WHERE product='hvc'
+    - UPDATE vehicle SET wear += wear_increase WHERE id IN (tractor_id, trailer_id)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - INSERT INTO animal (...) with random genetics, status='in_transit', arrival_at=NOW()+interval(distance_km/50||'h')
+    - UPDATE building_animal_capacity SET animal_count += 1
+    - INSERT INTO ledger (category='purchase')
+    - INSERT INTO ledger (category='transport')
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+    - animal_alert
+  - step: frontend_toast
+    message: 🐄 {breed} achetée ! Transport {distance}km — arrivée dans {delay}
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F001
+  tests:
+  - GIVEN stabulation 0/20, tractor, trailer, 100km, 50L hvc WHEN buy THEN animal in_transit, balance -= price+50€, ht -=
+    1.5, hvc -= 15L, wear += 2%
+  - GIVEN stabulation 20/20 WHEN buy THEN 400 pas de place
+  - GIVEN no trailer WHEN buy THEN 400 bétaillère requise
+  - GIVEN no tractor WHEN buy THEN 400 tracteur requis
+  - GIVEN hvc=0 WHEN buy THEN 400 carburant insuffisant
+  - GIVEN trailer wear=90% WHEN buy THEN wear increases + panne possible
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - vehicle:tractor (bovins/ovins/caprins/porcins/bisons/daims)
+  - vehicle:trailer (bovins/ovins/caprins/porcins/bisons/daims)
+  - vehicle:utilitaire (volailles/pintades/lapins/oies/canards)
+  - vehicle:van (chevaux, tracté par utilitaire)
+  - fuel:hvc
+  - building:adapté_espèce (stabulation/bergerie/chèvrerie/porcherie/poulailler/clapier/écurie)
+  note: Le véhicule requis dépend de l'espèce. Bétaillère pour gros animaux, utilitaire pour petits, van pour chevaux.
+- id: F003
+  name: Voir liste animaux (+ lots + génétique)
+  sprint: 3
+  status: spec
+  trigger:
+    type: navigation
+    page: /animals
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/animals?species=cattle&page=1&limit=20
+  - step: api_call
+    method: GET
+    route: /api/animals/dashboard
+  - step: frontend_render
+    components:
+    - DashboardElevage
+    - DataTable
+    - Filters
+  depends_on:
+  - F002
+  tests:
+  - GIVEN player with 5 animals WHEN GET /api/animals THEN list with 5 entries + dashboard stats
+  - GIVEN player with 0 animals WHEN GET THEN empty list + message 'Achetez votre premier animal'
+  requires:
+  - animal:any
+- id: F004
+  name: Consulter fiche animal
+  sprint: 3
+  status: spec
+  trigger:
+    type: button
+    label: '[Voir]'
+    page: /animals (DataTable row)
+    states:
+      active: animal_exists AND owned
+      disabled:
+      - condition: animal dead
+        tooltip: Animal mort — fiche en lecture seule
+  chain:
+  - step: frontend_navigate
+    to: /animals/:id
+  - step: api_call
+    method: GET
+    route: /api/animals/:id
+    response_includes:
+    - identity
+    - genetics
+    - health
+    - feeding
+    - production
+    - reproduction
+    - parents
+    - available_actions
+  - step: frontend_render
+    components:
+    - AnimalIdentity
+    - GeneticBars
+    - HealthPanel
+    - FeedingPanel
+    - ProductionPanel
+    - ReproductionPanel
+    - ActionButtons
+    conditional_sections:
+      dairy:
+      - MilkProduction
+      - MilkButton
+      beef:
+      - CarcassClassification
+      poultry:
+      - EggProduction
+      sheep:
+      - WoolProduction
+      - ShearButton
+  depends_on:
+  - F002
+  tests:
+  - GIVEN animal exists WHEN GET THEN full data with available_actions
+  - GIVEN animal not owned THEN 403
+  requires:
+  - animal:any
+- id: F005
+  name: Renommer un animal
+  sprint: 3
+  status: spec
+  trigger:
+    type: inline_edit
+    label: ✏️ (clic sur nom)
+    page: /animals/:id
+    states:
+      active: animal_exists AND owned AND NOT dead
+      disabled:
+      - condition: animal dead
+        tooltip: Animal mort — renommage impossible
+      - condition: name too long
+        tooltip: 30 caractères maximum
+      - condition: invalid characters
+        tooltip: Caractères spéciaux non autorisés
+  chain:
+  - step: frontend_inline_input
+    validation: 1-30 chars, /^[a-zA-ZÀ-ÿ0-9 '-]+$/
+  - step: api_call
+    method: PUT
+    route: /api/animals/:id
+    body: '{ name: string }'
+  - step: backend_validate_and_update
+    sql: UPDATE animal SET name=$name, is_named=true WHERE id=$1
+  - step: frontend_feedback
+    type: inline_checkmark
+  depends_on:
+  - F004
+  tests:
+  - GIVEN owned animal WHEN rename 'Marguerite' THEN name updated, is_named=true
+  - GIVEN animal not owned THEN 403
+  - GIVEN name > 30 chars THEN 400 nom trop long
+  - GIVEN name with <script> THEN 400 caractères invalides
+  requires:
+  - animal:any
+- id: F006
+  name: Acheter aliments au Marché Central
+  sprint: 4
+  status: spec
+  trigger:
+    type: button
+    label: Acheter {total} €
+    page: /market/products
+    states:
+      active: balance >= total AND ht >= 0.5 AND silo_has_space
+      disabled:
+      - condition: no silo
+        tooltip: Pas de silo — construisez-en un
+      - condition: silo full
+        tooltip: Silo plein ({current}/{capacity}t)
+      - condition: no tractor or broken
+        tooltip: Tracteur fonctionnel requis
+      - condition: no benne or broken
+        tooltip: Benne fonctionnelle requise
+      - condition: hvc < hvc_cost
+        tooltip: Carburant HVC insuffisant
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/market/buy
+    body: '{ product: string, quantity: number, building_id: uuid }'
+  - step: backend_idempotency_check
+  - step: backend_calculate_transport
+    logic: distance_km = haversine(market_prefecture, player_prefecture), transport_cost = distance_km × 0.30, hvc_cost =
+      distance_km × 0.20, ht_transport = distance_km / 100
+  - step: backend_transaction
+    sql:
+    - SELECT balance, ht_today FROM player FOR UPDATE
+    - SELECT quantity, capacity FROM inventory FOR UPDATE
+    - CHECK balance >= total AND stock + qty <= capacity
+    - UPDATE player, UPDATE inventory, INSERT ledger
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (used_vehicle_ids)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - UPDATE inventory SET quantity -= hvc_cost WHERE product='hvc'
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+  - step: frontend_toast
+    message: 🌾 {qty}t de {product} achetées pour {total}€
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F001
+  tests:
+  - GIVEN silo 10t empty WHEN buy 2t hay THEN silo=2t balance-=160
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  - GIVEN tractor, benne, 80km, hvc WHEN buy THEN stock delivered, wear += usage, hvc -= cost
+  requires:
+  - building:silo
+  - vehicle:tractor
+  - vehicle:benne
+  - fuel:hvc
+- id: F007
+  name: Remplir cuve à eau
+  sprint: 4
+  status: spec
+  trigger:
+    type: button
+    label: Remplir {total} €
+    page: /buildings/:id (cuve eau)
+    states:
+      active: cuve_not_full AND balance >= cost AND ht >= 0.5
+      disabled:
+      - condition: cuve full
+        tooltip: Cuve déjà pleine
+      - condition: balance < cost
+        tooltip: Solde insuffisant (besoin {cost}€)
+      - condition: ht < 0.5
+        tooltip: HT insuffisants
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/market/buy
+    body: '{ product: ''water'', quantity: number, building_id: uuid }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - same pattern as F006
+    - INSERT INTO ledger (category='purchase')
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+  - step: frontend_toast
+    message: 💧 Cuve remplie ({qty}L) — {cost}€
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F001
+  tests:
+  - GIVEN cuve 0/5000L WHEN fill 3000L THEN cuve=3000L, balance -= cost
+  - GIVEN cuve 5000/5000L WHEN fill THEN 400 cuve déjà pleine
+  - GIVEN balance < cost WHEN fill THEN 400 solde insuffisant
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - infra:cuve_eau
+- id: F008
+  name: Nourrir animaux (manuel)
+  sprint: 4
+  status: spec
+  trigger:
+    type: button
+    label: Nourrir 🍽️
+    page: /buildings/:id/feed
+    states:
+      active: ration_selected AND stock_ok AND ht >= cost AND not_already_fed
+      disabled:
+      - condition: no ration selected
+        tooltip: Sélectionnez une ration
+      - condition: stock insufficient
+        tooltip: 'Stock insuffisant : manque {X}kg de {product}'
+      - condition: ht < cost
+        tooltip: HT insuffisants (besoin {X}, reste {Y})
+      - condition: already fed
+        tooltip: Animaux déjà nourris aujourd'hui
+      - condition: desilage without equipment
+        tooltip: Désileuse requise (tracteur + désileuse)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/buildings/:id/feed
+    body: '{ ration_id: int, method: ''manual''|''desilage'' }'
+  - step: backend_idempotency_check
+  - step: backend_calculate_ht
+    logic: 'manual: ht_cost = 1.0 + (animal_count × ht_per_animal), desilage: ht_cost = 0.5 + (animal_count × ht_per_animal
+      × 0.4). ht_per_animal: bovins/chevaux/bisons=0.05, ovins/caprins/porcins=0.03, volailles/pintades/lapins=0.01. Desilage
+      requires tractor + desileuse.'
+  - step: backend_transaction
+    sql:
+    - SELECT ht_today FROM player FOR UPDATE
+    - 'For each ration component: SELECT quantity FROM inventory FOR UPDATE'
+    - 'If method=desilage: SELECT id, wear FROM vehicle WHERE type IN (''tractor'',''desileuse'') AND NOT is_broken FOR UPDATE'
+    - CHECK all stocks sufficient AND ht >= ht_cost
+    - UPDATE player SET ht -= ht_cost
+    - UPDATE inventory SET quantity -= need (per component)
+    - UPDATE animal SET last_fed_at=NOW(), days_unfed=0, feeding_quality=ration.quality
+    - 'If method=desilage: UPDATE vehicle SET wear += 0.5 WHERE id IN (tractor_id, desileuse_id)'
+    - 'If method=desilage: Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - INSERT INTO animal_feeding_log (ration_id, quality, method)
+  - step: backend_emit_ws
+    events:
+    - ht_update
+    - animal_alert
+  - step: frontend_toast
+    message: 🍽️ {N} animaux nourris — Ration {name} ★{quality}
+  - step: frontend_update_icons
+    target: 'DataTable animal rows: 🍽️❌ → 🍽️✅'
+  depends_on:
+  - F002
+  - F006
+  tests:
+  - GIVEN 1 animal unfed, 2t hay WHEN feed manual THEN fed, stock -= 25kg, ht -= 1.05
+  - GIVEN 1 animal unfed, 2t hay, tractor, desileuse WHEN feed desilage THEN fed, stock -= 25kg, ht -= 0.52
+  - GIVEN 0 stock WHEN feed THEN 400 stock insuffisant
+  - GIVEN already fed WHEN feed THEN 400 déjà nourris
+  - GIVEN desilage without tractor WHEN feed THEN 400 tracteur requis
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - animal:any
+  - stock:aliments
+  - building:stabulation
+- id: F009
+  name: Abreuver animaux
+  sprint: 4
+  status: spec
+  trigger:
+    type: button
+    label: Abreuver 💧
+    page: /buildings/:id (or batch)
+    states:
+      active: water_available AND ht >= 0.3 AND not_already_watered
+      disabled:
+      - condition: no water tank
+        tooltip: Pas de cuve à eau
+      - condition: tank empty
+        tooltip: Cuve vide
+      - condition: already watered
+        tooltip: Déjà abreuvés aujourd'hui
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/buildings/:id/water
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - SELECT ht FROM player FOR UPDATE
+    - SELECT quantity FROM inventory WHERE product='water' FOR UPDATE
+    - UPDATE player, inventory, animal SET last_watered_at=NOW()
+  - step: backend_emit_ws
+    events:
+    - ht_update
+    - animal_alert
+  - step: frontend_toast
+    message: 💧 {N} animaux abreuvés ({water}L)
+  depends_on:
+  - F007
+  - F002
+  tests:
+  - GIVEN cuve 5000L, 1 animal WHEN water THEN cuve -= 45L
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - animal:any
+  - infra:cuve_eau
+- id: F010
+  name: Configurer nourrissage automatique
+  sprint: 4
+  status: spec
+  trigger:
+    type: button
+    label: Activer nourrissage auto ⚙️
+    page: /buildings/:id/auto-feed
+    states:
+      active: ration_selected AND stock_15d_ok AND not_already_active
+      disabled:
+      - condition: no ration selected
+        tooltip: Sélectionnez une ration d'abord
+      - condition: stock < 15 days
+        tooltip: Stock insuffisant pour 15 jours (assez pour {days}j)
+      - condition: already active
+        tooltip: Nourrissage auto déjà actif ({days}j restants)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/buildings/:id/auto-feed
+    body: '{ ration_id: int, method: string }'
+  - step: backend_idempotency_check
+  - step: backend_upsert
+    sql: UPSERT auto_feed_config
+  - step: frontend_toast
+    message: ⚙️ Nourrissage auto activé — ~{days}j de stock
+  depends_on:
+  - F008
+  tests:
+  - GIVEN config active, tick runs THEN animals fed, stock deducted
+  - GIVEN config active, stock=0 THEN skip + notification
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - animal:any
+  - stock:aliments
+- id: F011
+  name: Tick santé — animaux non nourris tombent malades
+  sprint: 4
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 12
+  chain:
+  - step: worker_query
+    sql: SELECT * FROM animal WHERE last_fed_at < CURRENT_DATE - 1
+  - step: worker_update
+    logic: 'days_unfed += 1, health -= 10, if days_unfed >= 3: is_sick=true, if health <= 0: dead. Sick animals: weight_gain=0,
+      milk_production=0, males cannot inseminate.'
+  - step: worker_notify
+    events:
+    - 🍽️ {N} animaux pas nourris
+    - 🏥 {N} malades
+    - 💀 {N} morts
+  depends_on:
+  - F008
+  tests:
+  - GIVEN unfed 3 days THEN is_sick=true
+  - GIVEN health=5 unfed THEN dead
+  - GIVEN sick cow THEN milk_production=0 weight_gain=0
+  - GIVEN sick male THEN cannot inseminate
+  requires:
+  - animal:any
+- id: F012
+  name: Soigner un animal
+  sprint: 5
+  status: spec
+  trigger:
+    type: button
+    label: Soigner {cost} €
+    page: /animals/:id
+    states:
+      active: is_sick AND balance >= cost AND ht >= 0.5
+      disabled:
+      - condition: not sick
+        tooltip: Pas malade
+      - condition: balance < cost
+        tooltip: Solde insuffisant
+      - condition: ht < 0.5
+        tooltip: HT insuffisants
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animals/:id/heal
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player
+    - UPDATE player balance-=cost ht-=0.5
+    - UPDATE animal is_healing=true, healing_until=NOW()+3d, health+=10
+    - INSERT health_log
+    - INSERT ledger
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+    - animal_alert
+  - step: frontend_toast
+    message: 🩺 {name} en soins ! Guérison dans ~3j
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F011
+  tests:
+  - GIVEN sick WHEN heal THEN is_healing=true, healing_until=+3d, balance-=100
+  - GIVEN not sick THEN 400
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - animal:any
+- id: F013
+  name: Soigner tous (batch)
+  sprint: 5
+  status: spec
+  trigger:
+    type: button
+    label: Soigner tous
+    page: /animals (dashboard)
+    states:
+      active: sick_count > 0 AND balance >= total_cost AND ht >= total_ht
+      disabled:
+      - condition: no sick animals
+        tooltip: Aucun animal malade
+      - condition: balance < total_cost
+        tooltip: Solde insuffisant (besoin {total_cost}€)
+      - condition: ht < total_ht
+        tooltip: HT insuffisants (besoin {total_ht})
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animals/batch-heal
+    body: '{ animal_ids: [] }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql: same as F012 in loop, single transaction
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+    - animal_alert
+  - step: frontend_toast
+    message: 🩺 {N} animaux soignés ! -{total}€
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F012
+  tests:
+  - GIVEN 3 sick WHEN batch-heal THEN all healthy, balance -= sum(costs)
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - animal:any
+- id: F014
+  name: Vacciner un animal
+  sprint: 5
+  status: spec
+  trigger:
+    type: button
+    label: Vacciner {cost} €
+    page: /animals/:id
+    states:
+      active: vaccinated_until < now AND balance >= 50 AND ht >= 0.5
+      disabled:
+      - condition: already vaccinated
+        tooltip: Déjà vacciné (expire dans {X}j)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animals/:id/vaccinate
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player
+    - UPDATE player balance-=50 ht-=0.5
+    - UPDATE animal vaccinated_until=now+84d
+    - INSERT health_log, ledger
+  - step: frontend_toast
+    message: 💉 {name} vacciné ! Protection 1 an (84j)
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F004
+  tests:
+  - GIVEN unvaccinated WHEN vaccinate THEN protected 84d (1 an Cultivia)
+  - GIVEN vaccinated 5d ago THEN 400
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - animal:any
+- id: F015
+  name: Mettre de la paille
+  sprint: 5
+  status: spec
+  trigger:
+    type: button
+    label: Mettre paille 🛏️
+    page: /buildings/:id
+    states:
+      active: straw_stock >= need AND ht >= cost AND building.floor_type='litiere'
+      disabled:
+      - condition: no straw
+        tooltip: Stock paille insuffisant
+      - condition: bedding fresh
+        tooltip: Litière déjà fraîche
+      - condition: floor_type=caillebotis
+        tooltip: Bâtiment sur caillebotis (pas de litière)
+      - condition: pailleuse without tractor
+        tooltip: Tracteur requis pour la pailleuse
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/buildings/:id/bedding
+    body: '{ method: ''manual''|''pailleuse'' }'
+  - step: backend_idempotency_check
+  - step: backend_calculate_ht
+    logic: 'manual: ht_cost = 1.0, pailleuse: ht_cost = 0.5 (requires tractor + pailleuse)'
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE inventory(straw)
+    - CHECK building.floor_type = 'litiere'
+    - UPDATE inventory qty-=need
+    - UPDATE building bedding_ok=true, bedding_at=NOW()
+    - UPDATE building manure += straw_used × 1.2 (paille→fumier ratio)
+    - UPDATE player ht-=cost
+    - 'If method=pailleuse: UPDATE vehicle SET wear += 0.5 WHERE id IN (tractor_id, pailleuse_id)'
+    - 'If method=pailleuse: Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+  - step: frontend_toast
+    message: 🛏️ Litière posée — {qty}kg paille, {fumier}kg fumier
+  - step: frontend_animate_header
+    fields:
+    - ht
+  depends_on:
+  - F006
+  tests:
+  - GIVEN 500kg straw, litiere WHEN bedding manual THEN straw-=50kg bedding_ok=true manure+=60kg ht-=1.0
+  - GIVEN 500kg straw, litiere WHEN bedding pailleuse THEN straw-=50kg bedding_ok=true ht-=0.5
+  - GIVEN caillebotis WHEN bedding THEN 400 pas de litière
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - building:stabulation(floor_type=litiere)
+  - stock:paille
+- id: F016
+  name: Retirer le fumier
+  sprint: 5
+  status: spec
+  trigger:
+    type: button
+    label: Retirer fumier 💩
+    page: /buildings/:id
+    states:
+      active: manure > 0 AND fosse_has_space AND ht >= 0.5
+      disabled:
+      - condition: no manure
+        tooltip: Pas de fumier
+      - condition: fosse full
+        tooltip: Fosse pleine
+      - condition: no fosse
+        tooltip: Pas de fosse à fumier
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/buildings/:id/manure
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE building + fosse
+    - UPDATE building manure=0
+    - UPDATE fosse qty+=manure
+    - UPDATE player ht-=0.5
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (used_vehicle_ids)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - UPDATE inventory SET quantity -= hvc_cost WHERE product='hvc'
+  - step: backend_emit_ws
+    events:
+    - ht_update
+  - step: frontend_toast
+    message: '💩 Fumier retiré : {qty}kg → fosse'
+  - step: frontend_animate_header
+    fields:
+    - ht
+  depends_on:
+  - F001
+  tests:
+  - GIVEN 200kg manure, fosse 800/2000 THEN fosse=1000, manure=0
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - building:stabulation
+  - infra:fosse_fumier
+  - vehicle:tractor
+  - vehicle:epandeur
+  - fuel:hvc
+- id: F017
+  name: Retirer le lisier
+  sprint: 5
+  status: spec
+  trigger:
+    type: button
+    label: Retirer lisier
+    page: /buildings/:id
+    states:
+      active: lisier > 0 AND fosse_lisier_has_space AND ht >= 0.5
+      disabled:
+      - condition: no lisier
+        tooltip: Pas de lisier
+      - condition: fosse full
+        tooltip: Fosse à lisier pleine
+      - condition: no fosse
+        tooltip: Pas de fosse à lisier
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/buildings/:id/slurry
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE building + fosse_lisier
+    - CHECK building.floor_type = 'caillebotis'
+    - UPDATE building lisier=0
+    - UPDATE fosse_lisier qty+=lisier
+    - UPDATE player ht-=0.5
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (used_vehicle_ids)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - UPDATE inventory SET quantity -= hvc_cost WHERE product='hvc'
+  - step: backend_emit_ws
+    events:
+    - ht_update
+  - step: frontend_toast
+    message: '💧 Lisier retiré : {qty}L → fosse'
+  depends_on:
+  - F001
+  tests:
+  - GIVEN 500L lisier, fosse 5000/20000 THEN fosse=5500, lisier=0
+  - GIVEN fosse full THEN 400
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - building:stabulation(floor_type=caillebotis)
+  - infra:fosse_lisier
+  - vehicle:tractor
+  - vehicle:tonne_lisier
+  - fuel:hvc
+- id: F018
+  name: Inséminer (mâle ferme)
+  sprint: 6
+  status: spec
+  trigger:
+    type: button
+    label: Inséminer 1.0 HT
+    page: /animals/:id
+    states:
+      active: female AND adult AND not_pregnant AND in_period AND ht >= 1.0 AND male_available AND post_birth_delay_ok
+      disabled:
+      - condition: not adult
+        tooltip: Trop jeune (adulte requis)
+      - condition: pregnant
+        tooltip: Déjà gestante (mise bas dans {X}j)
+      - condition: out of period
+        tooltip: Hors période ({start}-{end})
+      - condition: no male
+        tooltip: Aucun mâle {race} dans votre ferme
+      - condition: male_max_inseminations
+        tooltip: Mâle a atteint le max d'inséminations aujourd'hui ({max}/jour)
+      - condition: breed_mismatch
+        tooltip: Le mâle doit être de la même race que la femelle
+      - condition: consanguinity
+        tooltip: Consanguinité interdite (père, fils ou frère de la femelle)
+      - condition: post_birth_too_recent
+        tooltip: Délai post-mise-bas non respecté (min {delay}j après naissance)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animals/:id/inseminate
+    body: '{ method: ''natural'', male_id: uuid }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + animal + male
+    - CHECK female.breed_id = male.breed_id
+    - CHECK male NOT IN (female.father_id, female.son_ids, female.brother_ids) -- consanguinité
+    - CHECK male.inseminations_today < species.max_inseminations_per_day
+    - CHECK female.last_birth_at IS NULL OR female.last_birth_at + species.post_birth_delay < NOW()
+    - UPDATE player ht-=1.0
+    - UPDATE animal pregnant_until=$due, mate_id=$male
+    - UPDATE male inseminations_today += 1
+    - INSERT reproduction_log with offspring_genetics
+  - step: frontend_toast
+    message: '🧬 {name} inséminée ! Mise bas : {date}'
+  depends_on:
+  - F004
+  tests:
+  - GIVEN female adult not pregnant, same breed male WHEN inseminate THEN pregnant
+  - GIVEN pregnant THEN 400
+  - GIVEN male different breed THEN 400 même race requise
+  - GIVEN male already 4 inseminations today (bovins) THEN 400 max atteint
+  - GIVEN last birth 10d ago, delay=21d THEN 400 délai post-mise-bas
+  requires:
+  - animal:male
+  - animal:female
+- id: F019
+  name: Inséminer (CIA)
+  sprint: 6
+  status: spec
+  trigger:
+    type: button
+    label: Inséminer CIA {cost} €
+    page: /animals/:id
+    states:
+      active: female AND adult AND not_pregnant AND in_period AND balance >= cost AND ht >= 0.5 AND post_birth_delay_ok
+      disabled:
+      - condition: not adult
+        tooltip: Trop jeune
+      - condition: pregnant
+        tooltip: Déjà gestante
+      - condition: out of period
+        tooltip: Hors période
+      - condition: balance < cost
+        tooltip: Solde insuffisant
+      - condition: post_birth_too_recent
+        tooltip: Délai post-mise-bas non respecté
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animals/:id/inseminate
+    body: '{ method: ''cia'', dose_id: uuid }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + animal
+    - CHECK female.last_birth_at IS NULL OR female.last_birth_at + species.post_birth_delay < NOW()
+    - UPDATE player balance-=cost ht-=0.5
+    - UPDATE animal pregnant_until=$due, mate_id=$dose.male_id
+    - INSERT reproduction_log with offspring_genetics (from dose genetics)
+    - INSERT ledger (category='insemination')
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+  - step: frontend_toast
+    message: '🧬 {name} inséminée (CIA) ! Mise bas : {date}'
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F018
+  tests:
+  - GIVEN female adult, balance >= 200 WHEN cia THEN pregnant, balance-=200
+  - GIVEN balance < cost THEN 400
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - animal:female
+- id: F020
+  name: Tick naissance
+  sprint: 6
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 13
+  chain:
+  - step: worker_query
+    sql: SELECT * FROM animal WHERE pregnant_until <= NOW()
+  - step: worker_create_offspring
+    logic: 'INSERT new animal with calculated genetics, location_type=''building'', building_id=mother.building_id. Offspring
+      count from species config (bovins=1, caprins=2, porcins=6-9). If allaitante breed and offspring age 0-3 months: is_nursing=true,
+      nursing_until=NOW()+21d.'
+  - step: worker_update_mother
+    sql: UPDATE animal SET pregnant_until=NULL, is_lactating=true, last_birth_at=NOW()
+  - step: worker_update_capacity
+    sql: UPDATE building_animal_capacity SET animal_count += offspring_count WHERE building_id = mother.building_id
+  - step: worker_notify
+    events:
+    - 🐄 {name} a donné naissance à {count} {offspring_type} !
+  depends_on:
+  - F018
+  tests:
+  - GIVEN pregnant due today WHEN tick THEN calf created in mother's building, mother lactating
+  - GIVEN allaitante breed THEN calf.is_nursing=true
+  - GIVEN building full THEN calf created but overflow warning notification
+  requires:
+  - animal:gestante
+- id: F021
+  name: Placer animal depuis arrivage
+  sprint: 6
+  status: spec
+  trigger:
+    type: button
+    label: Placer auto
+    page: /animals (dashboard)
+    states:
+      active: animals_arriving > 0 AND building_has_space AND ht >= 0.2
+      disabled:
+      - condition: no animals arriving
+        tooltip: Aucun animal en arrivage
+      - condition: no building with space
+        tooltip: Aucun bâtiment avec place disponible
+      - condition: ht < 0.2
+        tooltip: HT insuffisants
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animals/auto-place
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - Find building with space
+    - UPDATE animal location_type='building' building_id=$dest
+    - UPDATE capacity += 1
+    - UPDATE player ht -= 0.2×N
+  - step: backend_emit_ws
+    events:
+    - ht_update
+    - animal_alert
+  - step: frontend_toast
+    message: 🐄 {N} animaux placés automatiquement
+  - step: frontend_animate_header
+    fields:
+    - ht
+  depends_on:
+  - F020
+  - F001
+  tests:
+  - GIVEN 1 in arrival, stabulation with space THEN placed
+  - GIVEN no space THEN notification
+  requires:
+  - building:stabulation
+- id: F022
+  name: Voir arbre généalogique
+  sprint: 6
+  status: spec
+  trigger:
+    type: button
+    label: Voir généalogie
+    page: /animals/:id
+    states:
+      active: animal_exists
+      disabled:
+      - condition: animal not owned
+        tooltip: Animal non possédé
+      - condition: animal dead
+        tooltip: Animal mort — généalogie en lecture seule
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/animals/:id/pedigree?depth=3
+  - step: frontend_render
+    components:
+    - PedigreeTree (SVG, 3 generations)
+  depends_on:
+  - F004
+  tests:
+  - GIVEN animal with parents WHEN pedigree THEN 3 gen tree
+  requires:
+  - animal:any
+- id: F023
+  name: Traire les vaches
+  sprint: 7
+  status: spec
+  trigger:
+    type: button
+    label: Traire toutes
+    page: /animals/milking
+    states:
+      active: milking_parlor AND milk_tank_not_full AND ht >= ht_cost AND lactating_cows AND milking_slot_available
+      disabled:
+      - condition: no milking parlor
+        tooltip: Construisez une salle de traite
+      - condition: species not milkable
+        tooltip: Seuls bovins, caprins et ovins peuvent être traits
+      - condition: tank full
+        tooltip: Cuve pleine — vendez du lait
+      - condition: already milked this slot
+        tooltip: Déjà traites pour ce créneau (prochain à {next_slot}h)
+      - condition: ht insufficient
+        tooltip: HT insuffisants (besoin {ht_cost})
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animals/milk
+    body: '{ animal_ids | all: true, slot: 1|2|3|4 }'
+  - step: backend_idempotency_check
+  - step: backend_calculate_ht
+    logic: 'ht_cost = ceil(lactating_count / parlor_posts) × 0.5. Slots: 1=before 6h, 2=before 12h, 3=before 18h, 4=before
+      24h.'
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + milk_tank
+    - CHECK current_time < slot_deadline
+    - CHECK last_milked_slot < current_slot
+    - Calculate production per cow (base_production × genetics.milk_index × feeding_quality_bonus × welfare_bonus)
+    - UPDATE player ht-=ht_cost
+    - UPDATE animal last_milked_at=NOW(), last_milked_slot=current_slot
+    - UPDATE inventory(milk) qty+=total
+    - INSERT production_log
+  - step: frontend_toast
+    message: 🥛 {total}L collectés ! Qualité ⭐{quality_stars}
+  depends_on:
+  - F020
+  - F001
+  tests:
+  - GIVEN lactating cow, parlor 4 posts, tank WHEN milk slot 1 THEN tank += production, ht -= 0.5
+  - GIVEN 10 cows, parlor 4 posts WHEN milk THEN ht -= 1.5
+  - GIVEN already milked slot 2 WHEN milk slot 2 THEN 400
+  - GIVEN slot 3 at 19h THEN 400 créneau dépassé
+  requires:
+  - animal:vache_laitiere
+  - infra:salle_traite
+  - infra:cuve_lait
+- id: F024
+  name: Vendre lait au Marché Central
+  sprint: 7
+  status: spec
+  trigger:
+    type: button
+    label: Vendre {total} €
+    page: /animals/productions
+    states:
+      active: milk_stock > 0 AND ht >= 0.5
+      disabled:
+      - condition: stock empty
+        tooltip: Stock vide
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/market/sell
+    body: '{ product: ''milk'', quantity }'
+  - step: backend_idempotency_check
+  - step: backend_calculate_price
+    logic: 'Qualité Lait (QL) = moyenne(genetics.milk_index, feeding_quality). QL 50=×1.0, QL 80=×1.15, QL 20=×0.85. factor = 0.85 + (QL/100) × 0.30. price = base_price × factor × quantity'
+  - step: backend_calculate_transport
+    logic: distance_km = haversine(market_prefecture, player_prefecture), transport_cost = distance_km × 0.30, hvc_cost =
+      distance_km × 0.20, ht_transport = distance_km / 100
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + inventory(milk)
+    - UPDATE player balance+=revenue ht-=0.5
+    - UPDATE inventory qty-=sold
+    - INSERT ledger
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (used_vehicle_ids)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - UPDATE inventory SET quantity -= hvc_cost WHERE product='hvc'
+  - step: frontend_toast
+    message: 🥛 {qty}L vendus pour {total}€
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F023
+  tests:
+  - GIVEN 32L milk, price 0.38 WHEN sell THEN balance += 12.31
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  - GIVEN tractor, citerne_lait, 60km WHEN sell THEN balance += prix - transport, wear += usage, hvc -= cost
+  requires:
+  - stock:lait
+  - vehicle:tractor
+  - vehicle:citerne_lait
+  - fuel:hvc
+- id: F025
+  name: Vendre animal à l'abattoir
+  sprint: 7
+  status: spec
+  trigger:
+    type: button
+    label: Confirmer vente {prix} € 🔪
+    page: /animals/:id (ConfirmModal)
+    states:
+      active: ht >= 0.5 AND has_tractor AND has_trailer AND hvc >= hvc_cost
+      disabled:
+      - condition: ht < 0.5
+        tooltip: HT insuffisants
+      - condition: no trailer or broken
+        tooltip: Bétaillère fonctionnelle requise
+      - condition: no tractor or broken
+        tooltip: Tracteur fonctionnel requis
+      - condition: hvc < hvc_cost
+        tooltip: Carburant HVC insuffisant
+  chain:
+  - step: frontend_confirm_modal
+    warnings:
+    - gestante → veau perdu
+    - lactation → lait perdu
+    - nommée → êtes-vous sûr
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animals/slaughter
+    body: '{ animal_ids }'
+  - step: backend_idempotency_check
+  - step: backend_calculate_transport
+    logic: distance_km = haversine(abattoir_prefecture, player_prefecture), transport_cost = distance_km × 0.50, hvc_cost
+      = distance_km × 0.15, ht_transport = 0.5 + distance_km / 100
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player
+    - 'Calculate carcass: carcass_weight = weight × rendement_carcasse(breed)'
+    - 'Calculate quality: conformation(A-E) + engraissement(1-5) from genetics.allure_generale'
+    - 'Calculate price: carcass_weight × market_price_per_kg × quality_multiplier'
+    - UPDATE player balance+=(revenue - transport_cost) ht-=0.5×N
+    - UPDATE animal life_stage='dead'
+    - UPDATE capacity -= 1
+    - INSERT ledger(category='sale') + slaughter_log(carcass_weight, conformation, engraissement)
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (used_vehicle_ids)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - UPDATE inventory SET quantity -= hvc_cost WHERE product='hvc'
+  - step: frontend_toast
+    message: 🔪 {N} vendus pour {total}€ (carcasse {carcass_weight}kg, qualité {conformation}{engraissement})
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  - step: frontend_remove_from_table
+    animation: fade-out
+  depends_on:
+  - F004
+  tests:
+  - GIVEN cow 689kg, rendement 55%, price 3.99, quality B3 WHEN slaughter THEN carcass=379kg, balance += 1512 - transport
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  - GIVEN tractor, trailer, 100km WHEN sell THEN balance += prix_abattoir - transport, wear += usage
+  - GIVEN no trailer THEN 400 bétaillère requise
+  requires:
+  - animal:any
+  - vehicle:tractor
+  - vehicle:trailer
+  - fuel:hvc
+- id: F026
+  name: Voir cours du marché
+  sprint: 7
+  status: spec
+  trigger:
+    type: navigation
+    page: /market/prices
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/market/prices
+  - step: frontend_render
+    components:
+    - PriceTable with variation arrows
+  depends_on: []
+  tests:
+  - GIVEN market active WHEN GET /api/market/prices THEN all products with current price + variation
+  - GIVEN new player WHEN GET THEN prices visible without login requirement
+  requires: []
+- id: F027
+  name: Embaucher un employé
+  sprint: 8
+  status: spec
+  trigger:
+    type: button
+    label: Embaucher {salary} €
+    page: /employees
+    states:
+      active: balance >= 1600 AND employee_count < 3
+      disabled:
+      - condition: balance < 1600
+        tooltip: Solde insuffisant (besoin 1 600€)
+      - condition: 3 employees
+        tooltip: Maximum 3 employés
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/employees
+    body: '{ specialty, name }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player
+    - UPDATE player balance-=1600 ht_max+=4
+    - INSERT employee (salary=1600, pa_per_day=4)
+    - INSERT INTO ledger (category='salary')
+  - step: frontend_toast
+    message: 👷 {name} embauché ! +4 HT/jour — Salaire 1 600€/mois
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  - step: frontend_update_header
+    field: ht_max
+  depends_on: []
+  tests:
+  - GIVEN 0 employees, balance>=1600 WHEN hire THEN ht_max=44, balance-=1600
+  - GIVEN 3 employees THEN 400
+  - GIVEN balance < 1600 THEN 400
+  requires: []
+- id: F028
+  name: Licencier un employé
+  sprint: 8
+  status: spec
+  trigger:
+    type: button
+    label: Licencier
+    page: /employees (ConfirmModal)
+    states:
+      active: employee_exists
+      disabled:
+      - condition: no employee
+        tooltip: Aucun employé à licencier
+  chain:
+  - step: generate_idempotency_key
+  - step: frontend_confirm_modal
+    warnings:
+    - Vous perdrez 4 HT/jour
+  - step: api_call
+    method: DELETE
+    route: /api/employees/:id
+  - step: backend_transaction
+    sql:
+    - UPDATE player ht_max-=4
+    - DELETE employee
+  - step: frontend_toast
+    message: 👷 {name} licencié — HT max réduit de 4
+  - step: frontend_animate_header
+    fields:
+    - ht
+  depends_on:
+  - F027
+  tests:
+  - GIVEN 1 employee WHEN fire THEN ht_max -= 4, employee deleted
+  - GIVEN 0 employees WHEN fire THEN 400 aucun employé
+  - GIVEN auto-feed active with this employee THEN warning notification
+  requires:
+  - employee
+- id: F029
+  name: Déplacer animal (bâtiment ou pré)
+  sprint: 8
+  status: spec
+  trigger:
+    type: button
+    label: Déplacer 🚜
+    page: /animals/:id (modal)
+    states:
+      active: 'destination_has_space AND ht >= cost AND (if pasture: season_ok_or_allaitante AND has_trailer)'
+      disabled:
+      - condition: no space
+        tooltip: Pas de place ({X}/{Y})
+      - condition: winter + pasture + not allaitante
+        tooltip: Mise au pré interdite en hiver (races laitières)
+      - condition: no trailer
+        tooltip: Bétaillère requise pour le pré
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animals/move
+    body: '{ animal_ids, destination_type, destination_id }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + destination capacity
+    - 'If pasture + winter: CHECK breed.is_allaitante = true (allaitantes can stay year-round with winter ration)'
+    - UPDATE animal location_type + building_id/parcel_id
+    - UPDATE old capacity -=1, new +=1
+    - UPDATE player ht -= cost
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (used_vehicle_ids)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - UPDATE inventory SET quantity -= hvc_cost WHERE product='hvc'
+  - step: frontend_toast
+    message: 🚜 {N} animaux déplacés vers {destination}
+  - step: frontend_animate_header
+    fields:
+    - ht
+  depends_on:
+  - F004
+  - F001
+  tests:
+  - GIVEN spring, trailer, pré with space WHEN move THEN moved
+  - GIVEN winter, race laitière THEN 400
+  - GIVEN winter, race allaitante, trailer WHEN move THEN moved (ration hivernale requise)
+  requires:
+  - animal:any
+  - vehicle:tractor
+  - vehicle:trailer
+  - parcel:pre
+  - fuel:hvc
+- id: F030
+  name: Voir météo
+  sprint: 8
+  status: spec
+  trigger:
+    type: navigation
+    page: /weather
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/weather?prefecture_id={id}
+  - step: frontend_render
+    components:
+    - WeatherCards (3 days)
+    - AlertBanner
+    - HistoryTable
+  depends_on: []
+  tests:
+  - GIVEN player in Paris WHEN GET /api/weather THEN 3-day forecast for Paris
+  - GIVEN active weather event (gel) THEN alert banner displayed
+  requires: []
+- id: F031
+  name: Voir dashboard complet
+  sprint: 4
+  status: spec
+  trigger:
+    type: navigation
+    page: /dashboard
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/dashboard
+  - step: frontend_render
+    components:
+    - WelcomeBanner
+    - FinanceWidget
+    - HtWidget
+    - AlertWidget
+    - BalanceChart
+    - LivestockWidget
+    - ParcelsWidget
+    - BuildingsWidget
+    - EquipmentWidget
+    - NotifWidget
+    - NewsWidget
+    - GuideWidget
+  depends_on:
+  - F002
+  - F003
+  tests:
+  - GIVEN new player WHEN GET /api/dashboard THEN all widgets with starter data
+  - GIVEN player with alerts WHEN GET THEN AlertWidget shows pending alerts
+  requires: []
+- id: F032
+  name: Souscrire épargne
+  sprint: 9
+  status: spec
+  trigger:
+    type: button
+    label: Souscrire {amount} €
+    page: /finances/savings
+    states:
+      active: balance >= amount AND amount >= 1000
+      disabled:
+      - condition: balance < amount
+        tooltip: Solde insuffisant
+      - condition: amount < 1000
+        tooltip: Montant minimum 1 000€
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/finances/savings
+    body: '{ amount, duration_months }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player
+    - UPDATE player balance-=amount
+    - INSERT savings
+    - INSERT ledger
+  - step: backend_emit_ws
+    events:
+    - balance_update
+  - step: frontend_toast
+    message: 💰 Épargne souscrite — {amount}€ à {rate}%
+  - step: frontend_animate_header
+    fields:
+    - balance
+  depends_on: []
+  tests:
+  - GIVEN 10k€ 3 months WHEN subscribe THEN balance-=10k, maturity in 21d
+  requires: []
+- id: F033
+  name: Demander un prêt
+  sprint: 9
+  status: spec
+  trigger:
+    type: button
+    label: Emprunter {amount} €
+    page: /finances/loans
+    states:
+      active: total_loans + amount <= 150000
+      disabled:
+      - condition: ceiling reached
+        tooltip: Plafond 150 000€ atteint
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/finances/loans
+    body: '{ amount, duration_months }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player
+    - UPDATE player balance+=amount
+    - INSERT loan
+    - INSERT ledger
+  - step: backend_emit_ws
+    events:
+    - balance_update
+  - step: frontend_toast
+    message: 🏦 Prêt de {amount}€ accordé !
+  - step: frontend_animate_header
+    fields:
+    - balance
+  depends_on: []
+  tests:
+  - GIVEN 0 loans WHEN borrow 50k THEN balance+=50k
+  - GIVEN 150k borrowed THEN 400
+  requires: []
+- id: F034
+  name: Envoyer un message
+  sprint: 9
+  status: spec
+  trigger:
+    type: button
+    label: Envoyer ✉️
+    page: /messages (modal)
+    states:
+      active: recipient_valid AND subject_not_empty AND body_not_empty
+      disabled:
+      - condition: no recipient
+        tooltip: Sélectionnez un destinataire
+      - condition: subject empty
+        tooltip: Saisissez un sujet
+      - condition: body empty
+        tooltip: Rédigez votre message
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/messages
+    body: '{ to_player_id, subject, body }'
+  - step: backend_idempotency_check
+  - step: backend_insert
+    sql: INSERT INTO message
+  - step: backend_emit_ws
+    events:
+    - notification to recipient
+  - step: frontend_toast
+    message: ✉️ Message envoyé à {recipient}
+  depends_on: []
+  tests:
+  - GIVEN valid recipient + subject + body WHEN send THEN message created + WS notification
+  - GIVEN no recipient THEN 400 destinataire requis
+  - GIVEN body empty THEN 400 message vide
+  - GIVEN same idempotency key ×2 THEN no double message
+  requires: []
+- id: F035
+  name: Acheter une parcelle
+  sprint: 10
+  status: spec
+  trigger:
+    type: button
+    label: Acheter {prix} €
+    page: /parcels/buy
+    states:
+      active: balance >= prix AND ht >= 2.0 AND parcelle_disponible
+      disabled:
+      - condition: balance < prix
+        tooltip: Solde insuffisant (besoin {prix}€)
+      - condition: ht < 2.0
+        tooltip: HT insuffisants (besoin 2.0)
+      - condition: parcelle déjà vendue
+        tooltip: Cette parcelle a été achetée par un autre joueur
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/buy
+    body: '{ parcel_listing_id: int }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - SELECT * FROM parcel_listing WHERE id=$1 AND status='available' FOR UPDATE
+    - CHECK listing exists AND not sold
+    - UPDATE parcel_listing SET status='sold', buyer_id=$player_id
+    - INSERT INTO parcel (player_id, prefecture_id, type, size_ha, soil_quality)
+    - INSERT INTO soil_analysis (parcel_id, fertilite, structure, oligo, ph, matiere_org)
+    - UPDATE player SET balance -= prix, ht -= 2.0
+    - INSERT INTO transaction (ledger)
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+  - step: frontend_toast
+    message: 🌾 Parcelle achetée ! {ha}ha à {prefecture} — Qualité ⭐{quality}
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on: []
+  tests:
+  - GIVEN parcelle dispo, balance OK WHEN buy THEN parcel created, listing sold
+  - GIVEN parcelle déjà vendue THEN 400 "Déjà achetée"
+  - GIVEN 2 joueurs achètent même parcelle simultanément THEN FOR UPDATE, 1 seul gagne
+  - GIVEN same idempotency key ×2 THEN no double achat
+  requires: []
+  note: |
+    SYSTÈME DE GÉNÉRATION PARCELLES :
+    - Chaque 1er du mois Cultivia, le serveur génère des parcelles à vendre par ville.
+    - Nombre = nb_joueurs_dans_la_ville × 10.
+    - Chaque parcelle a : type (culture/pré), taille (5-30ha aléatoire), qualité sol (aléatoire), prix/ha (fixe par préfecture).
+    - Les parcelles sont visibles par TOUS les joueurs (pas juste ceux de la ville).
+    - Un joueur peut acheter dans N'IMPORTE QUELLE ville (mais transport plus cher si loin).
+    - Le dernier jour du mois : la limite de stock tombe, les parcelles invendues sont accessibles sans restriction.
+    - Les parcelles non vendues à la fin du mois disparaissent (nouveau stock le mois suivant).
+- id: F036
+  name: Analyser le sol
+  sprint: 10
+  status: spec
+  trigger:
+    type: button
+    label: Analyser {cost} €
+    page: /parcels/:id
+    states:
+      active: parcel_owned AND balance >= 50 AND ht >= 0.5 AND NOT recently_analyzed
+      disabled:
+      - condition: balance < 50
+        tooltip: Solde insuffisant (besoin 50€)
+      - condition: ht < 0.5
+        tooltip: HT insuffisants (besoin 0.5)
+      - condition: recently analyzed
+        tooltip: Analyse déjà effectuée récemment (prochaine dans {days}j)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/analyze-soil
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player
+    - UPDATE parcel_soil last_analysis=NOW()
+    - UPDATE player balance-=50 ht-=0.5
+    - INSERT INTO ledger
+  - step: frontend_toast
+    message: 🔬 Analyse de sol terminée ! Valeurs précises révélées.
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  - step: frontend_update
+    target: 'soil gauges: approximate → precise values'
+  depends_on:
+  - F035
+  tests:
+  - GIVEN no analysis WHEN analyze THEN values visible
+  - GIVEN recent analysis THEN 400
+  requires:
+  - parcel
+- id: F037
+  name: Préparer sol (déchaumer/labourer/herser)
+  sprint: 10
+  status: spec
+  trigger:
+    type: button
+    label: '{action} ({ht} HT — {hvc}L)'
+    page: /parcels/:id
+    states:
+      active: parcel_owned AND has_tractor AND has_tool AND ht_ok AND hvc_ok AND correct_sequence
+      disabled:
+      - condition: no tractor or broken
+        tooltip: Tracteur fonctionnel requis
+      - condition: no tool for action
+        tooltip: '{tool} requis pour {action}'
+      - condition: wrong sequence
+        tooltip: Étape précédente non effectuée ({previous} requis)
+      - condition: ht insufficient
+        tooltip: HT insuffisants (besoin {ht_cost})
+      - condition: hvc insufficient
+        tooltip: Carburant HVC insuffisant (besoin {hvc_cost}L)
+      - condition: technique=direct and action=prepare
+        tooltip: Pas de préparation en semis direct
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/prepare
+    body: '{ type: stubble|plow|harrow, technique: traditional|tcs|direct }'
+  - step: backend_idempotency_check
+  - step: backend_validate_technique
+    logic: 'traditional: stubble→plow→harrow. tcs: stubble→harrow (no plow). direct: skip all (semoir direct only).'
+  - step: backend_transaction
+    sql:
+    - 'Check equipment: stubble→tractor+cultivateur|dechaumeur, plow→tractor+charrue, harrow→tractor+herse_rotative'
+    - FOR UPDATE player + hvc
+    - UPDATE parcel status
+    - UPDATE player ht, UPDATE inventory hvc
+    - UPDATE vehicle wear
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+  - step: frontend_toast
+    message: 🚜 {action} effectué ! Parcelle prête pour l'étape suivante.
+  depends_on:
+  - F035
+  tests:
+  - GIVEN fallow + tractor + cultivateur WHEN stubble THEN status=stubbled
+  - GIVEN stubbled + tractor + charrue WHEN plow (traditional) THEN status=plowed
+  - GIVEN plowed + tractor + herse_rotative WHEN harrow THEN status=harrowed
+  - GIVEN technique=tcs WHEN plow THEN 400 pas de labour en TCS
+  - GIVEN technique=direct WHEN stubble THEN 400 pas de préparation en semis direct
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:cultivateur|dechaumeur (stubble)
+  - vehicle:charrue (plow, traditional only)
+  - vehicle:herse_rotative (harrow)
+  - fuel:hvc
+- id: F038
+  name: Semer
+  sprint: 10
+  status: spec
+  trigger:
+    type: button
+    label: Semer {cost} €
+    page: /parcels/:id
+    states:
+      active: parcel_prepared AND season_ok AND has_semoir AND has_seeds AND ht_ok AND hvc_ok AND rotation_ok
+      disabled:
+      - condition: parcel not prepared
+        tooltip: Parcelle non préparée — effectuez le travail du sol
+      - condition: wrong season
+        tooltip: 'Hors période de semis pour {culture} (période : {start}-{end})'
+      - condition: no semoir
+        tooltip: Semoir requis ({semoir_type})
+      - condition: no seeds
+        tooltip: Stock de semences insuffisant
+      - condition: rotation not respected
+        tooltip: Rotation non respectée — {last_crop} cultivé précédemment
+      - condition: ht insufficient
+        tooltip: HT insuffisants (besoin {ht_cost})
+      - condition: hvc insufficient
+        tooltip: Carburant HVC insuffisant (besoin {hvc_cost}L)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/sow
+    body: '{ seed_type_id, seed_quality: standard|certified }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - Check season, equipment, stock, rotation
+    - 'Check semoir type: cereals→semoir, mais/betterave→semoir_mb'
+    - INSERT crop
+    - UPDATE parcel status=sown
+    - UPDATE player balance ht, UPDATE inventory hvc seeds
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (used_vehicle_ids)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - INSERT INTO ledger
+  - step: frontend_toast
+    message: 🌱 {culture} semé sur {ha}ha ! Croissance en cours.
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F037
+  tests:
+  - GIVEN harrowed + spring + semoir WHEN sow wheat THEN crop created
+  - GIVEN harrowed + spring + semoir_mb WHEN sow corn THEN crop created
+  - GIVEN no semoir_mb WHEN sow corn THEN 400 semoir maïs/betterave requis
+  - GIVEN rotation not respected WHEN sow THEN 409 rotation
+  - GIVEN wrong season WHEN sow THEN 400 hors période
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:semoir (céréales, colza, tournesol, pois, herbe)
+  - vehicle:semoir_mb (maïs, betterave)
+  - fuel:hvc
+  - stock:semences
+- id: F039
+  name: Épandre engrais
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Épandre
+    page: /parcels/:id
+    states:
+      active: has_engrais AND has_epandeur_engrais AND has_tractor AND ht_ok AND hvc_ok
+      disabled:
+      - condition: no engrais
+        tooltip: Stock d'engrais insuffisant
+      - condition: no epandeur_engrais or broken
+        tooltip: Épandeur à engrais fonctionnel requis
+      - condition: no tractor or broken
+        tooltip: Tracteur fonctionnel requis
+      - condition: ht insufficient
+        tooltip: HT insuffisants (besoin {ht_cost})
+      - condition: hvc insufficient
+        tooltip: Carburant HVC insuffisant (besoin {hvc_cost}L)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/fertilize
+    body: '{ fertilizer_type, quantity_per_ha }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - Check equipment + stock
+    - UPDATE parcel_soil nutrients
+    - UPDATE inventory, player, vehicle
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (used_vehicle_ids)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - UPDATE inventory SET quantity -= hvc_cost WHERE product='hvc'
+  - step: frontend_toast
+    message: 🧪 Engrais {type} épandu sur {ha}ha ! Nutriments rechargés.
+  depends_on:
+  - F038
+  - F006
+  tests:
+  - GIVEN 5t engrais, tractor, epandeur_engrais, 10ha WHEN fertilize THEN nutrients up, stock -= qty, ht -= cost
+  - GIVEN no engrais THEN 400 stock insuffisant
+  - GIVEN no epandeur_engrais THEN 400 épandeur requis
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:epandeur_engrais
+  - stock:engrais
+  - fuel:hvc
+- id: F040
+  name: Traiter (fongicide/herbicide/insecticide)
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Traiter
+    page: /parcels/:id
+    states:
+      active: crop_exists AND has_pulverisateur AND has_traitement AND ht_ok AND hvc_ok
+      disabled:
+      - condition: no crop
+        tooltip: Pas de culture en cours
+      - condition: no pulverisateur or broken
+        tooltip: Pulvérisateur fonctionnel requis
+      - condition: no traitement stock
+        tooltip: Stock de traitement insuffisant
+      - condition: ht insufficient
+        tooltip: HT insuffisants (besoin {ht_cost})
+      - condition: hvc insufficient
+        tooltip: Carburant HVC insuffisant (besoin {hvc_cost}L)
+      - condition: already treated
+        tooltip: Traitement déjà appliqué
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/treat
+    body: '{ treatment_type }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - Check equipment + stock
+    - UPDATE crop treatment_done=true
+    - UPDATE inventory, player, vehicle
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (used_vehicle_ids)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - UPDATE inventory SET quantity -= hvc_cost WHERE product='hvc'
+  - step: frontend_toast
+    message: 🧴 Traitement {treatment_type} appliqué sur {ha}ha !
+  depends_on:
+  - F038
+  tests:
+  - GIVEN no herbicide WHEN harvest THEN yield × 0.90
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:pulverisateur
+  - stock:traitement
+  - fuel:hvc
+- id: F041
+  name: Récolter
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Récolter
+    page: /parcels/:id
+    states:
+      active: crop.status='mature' AND has_harvest_machine AND ht_ok AND hvc_ok
+      disabled:
+      - condition: crop not mature
+        tooltip: Culture pas encore mature ({growth}%)
+      - condition: crop over-mature
+        tooltip: ⚠️ Culture sur-mature depuis {days}j — rendement réduit de {penalty}%
+      - condition: no harvest machine
+        tooltip: '{machine} requise pour {crop}'
+      - condition: no benne or broken
+        tooltip: Benne fonctionnelle requise
+      - condition: ht insufficient
+        tooltip: HT insuffisants (besoin {ht_cost})
+      - condition: hvc insufficient
+        tooltip: Carburant HVC insuffisant (besoin {hvc_cost}L)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/harvest
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - 'Select harvest machine by crop: cereals/colza/tournesol/pois/mais_grain→moissonneuse, mais_ensile/sorgho→ensileuse,
+      betterave→arracheuse_betterave'
+    - Calculate yield (9 factors + soil health bonus)
+    - 'Soil health bonus: welfare_factor from soil_health_index (0-19=×0.90, 20-49=×1.00, 50-79=×1.10, 80-100=×1.25)'
+    - 'Over-maturity penalty: if days_since_mature > 7 then yield × (1 - 0.02 × (days - 7)), min 0.50'
+    - Store in silo (capped)
+    - Auto-sell excess
+    - 'If crop.produces_straw: INSERT straw_on_field (paille au sol)'
+    - DELETE crop, UPDATE parcel status=fallow
+    - UPDATE parcel fatigue_index (+5 rotation, +15 monoculture)
+    - UPDATE player, vehicle, inventory
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (used_vehicle_ids)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+  - step: frontend_toast
+    message: 🌾 {total}t récoltées ! {stored}t stockées, {excess}t vendues
+  depends_on:
+  - F038
+  tests:
+  - GIVEN mature wheat, silo 8t free WHEN harvest 82t THEN 8t stored 74t sold
+  - GIVEN mature wheat WHEN harvest THEN straw_on_field created (8t/ha)
+  - GIVEN mature corn_silage, no ensileuse THEN 400 ensileuse requise
+  - GIVEN mature sugar_beet, no arracheuse THEN 400 arracheuse requise
+  - GIVEN monoculture wheat ×2 THEN fatigue_index += 15
+  - GIVEN rotation wheat→colza THEN fatigue_index += 5
+  requires:
+  - parcel
+  - vehicle:moissonneuse (céréales, colza, tournesol, pois, maïs grain)
+  - vehicle:ensileuse (maïs ensilé, sorgho ensilé)
+  - vehicle:arracheuse_betterave (betterave)
+  - vehicle:benne
+  - fuel:hvc
+- id: F042
+  name: Vendre récolte
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Vendre {total} €
+    page: /market/sell
+    states:
+      active: stock_recolte > 0 AND has_tractor AND has_benne AND ht_ok AND hvc_ok
+      disabled:
+      - condition: no stock
+        tooltip: Aucune récolte en stock
+      - condition: no tractor or broken
+        tooltip: Tracteur fonctionnel requis
+      - condition: no benne or broken
+        tooltip: Benne fonctionnelle requise
+      - condition: ht insufficient
+        tooltip: HT insuffisants (besoin {ht_cost})
+      - condition: hvc insufficient
+        tooltip: Carburant HVC insuffisant (besoin {hvc_cost}L)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/market/sell
+    body: '{ product_type, quantity, quality: 1|2|3 }'
+  - step: backend_idempotency_check
+  - step: backend_calculate_price
+    logic: price_per_ton = base_price × quality_factor(1=0.85, 2=1.00, 3=1.10) × season_factor(harvest_season=0.90, other=1.10)
+  - step: backend_calculate_transport
+    logic: distance_km = haversine(coop_prefecture, player_prefecture), transport_cost = distance_km × 0.30, hvc_cost = distance_km
+      × 0.20, ht_transport = distance_km / 100
+  - step: backend_transaction
+    sql:
+    - SELECT balance, ht_today FROM player FOR UPDATE
+    - SELECT quantity FROM inventory WHERE product=$product AND quality=$quality FOR UPDATE
+    - SELECT id, wear FROM vehicle WHERE type=tractor AND NOT is_broken FOR UPDATE
+    - SELECT id, wear FROM vehicle WHERE type=benne AND NOT is_broken FOR UPDATE
+    - SELECT quantity FROM inventory WHERE product=hvc FOR UPDATE
+    - CHECK stock >= quantity AND ht >= ht_cost AND hvc >= hvc_cost
+    - UPDATE inventory SET quantity -= sold_quantity WHERE product=$product
+    - UPDATE player SET balance += (prix_total - transport_cost), ht_today -= ht_cost
+    - UPDATE inventory SET quantity -= hvc_cost WHERE product=hvc
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (tractor_id, benne_id)
+    - 'Roll panne chance: if wear > 80% then 15% chance is_broken=true'
+    - INSERT INTO ledger (category=sale)
+    - INSERT INTO ledger (category=transport)
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+    - stock_update
+  - step: frontend_toast
+    message: 💰 {quantity}t {product} Q{quality} vendus ! +{prix}€ (transport -{transport_cost}€)
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F041
+  tests:
+  - GIVEN tractor, benne, 50km, 100t wheat Q2, hvc WHEN sell THEN balance += prix - transport
+  - GIVEN wheat Q3 sold in winter THEN price = base × 1.10 × 1.10
+  - GIVEN wheat Q1 sold in summer THEN price = base × 0.85 × 0.90
+  - GIVEN no benne THEN 400 benne requise
+  - GIVEN tractor broken THEN 400 tracteur en panne
+  - GIVEN hvc=0 THEN 400 carburant insuffisant
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - stock:recolte
+  - vehicle:tractor
+  - vehicle:benne
+  - fuel:hvc
+- id: F043
+  name: Acheter matériel neuf
+  sprint: 12
+  status: spec
+  trigger:
+    type: button
+    label: Acheter {prix} €
+    page: /equipment/shop
+    states:
+      active: balance >= prix + delivery_cost AND ht >= 1.0
+      disabled:
+      - condition: balance < total_cost
+        tooltip: Solde insuffisant (besoin {prix}€ + {delivery_cost}€ livraison)
+      - condition: ht < 1.0
+        tooltip: HT insuffisants (besoin 1.0)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/vehicles/buy
+    body: '{ vehicle_type_id }'
+  - step: backend_idempotency_check
+  - step: backend_calculate_delivery
+    logic: distance_km = haversine(concessionnaire_prefecture, player_prefecture), delivery_cost = distance_km × 0.80, delivery_delay
+      = distance_km / 60
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player
+    - total_cost = prix + delivery_cost
+    - CHECK balance >= total_cost
+    - UPDATE player balance -= total_cost, ht -= 1.0
+    - INSERT vehicle with status='in_delivery', arrival_at=NOW()+delivery_delay
+    - Recalculate is_sheltered
+    - INSERT ledger (category='purchase', amount=prix)
+    - INSERT ledger (category='transport', amount=delivery_cost)
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+  - step: frontend_toast
+    message: 🚜 {type} commandé ! Livraison {distance}km — arrivée dans {delay} ({delivery_cost}€ transport)
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on: []
+  tests:
+  - GIVEN 55k€ WHEN buy tractor THEN vehicle created
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  - GIVEN 55k€, concessionnaire 120km WHEN buy tractor THEN vehicle in_delivery, balance -= prix + 96€ delivery
+  - GIVEN balance < prix + delivery_cost THEN 400 solde insuffisant
+  requires: []
+- id: F044
+  name: Entretenir matériel
+  sprint: 12
+  status: spec
+  trigger:
+    type: button
+    label: Entretenir ({type}) — {cost}€ {ht_cost} HT
+    page: /equipment/:id
+    states:
+      active: vehicle_exists AND (type=monthly AND ht >= 1.0) OR (type=annual AND ht >= 2.0 AND balance >= 500)
+      disabled:
+      - condition: ht < 1.0 (monthly)
+        tooltip: HT insuffisants (besoin 1.0)
+      - condition: ht < 2.0 (annual)
+        tooltip: HT insuffisants (besoin 2.0)
+      - condition: balance < 500 (annual)
+        tooltip: Solde insuffisant (besoin 500€)
+      - condition: wear = 0
+        tooltip: Matériel en parfait état — pas d'entretien nécessaire
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/vehicles/:id/maintain
+    body: '{ type: monthly|annual }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + vehicle
+    - 'IF type=monthly: CHECK ht >= 1.0, UPDATE vehicle wear -= 5 (min 0), UPDATE player ht -= 1.0, cost = 0€'
+    - 'IF type=annual: CHECK ht >= 2.0 AND balance >= 500, UPDATE vehicle wear -= 15 (min 0), UPDATE player ht -= 2.0 balance
+      -= 500'
+    - INSERT INTO ledger (category='maintenance')
+  - step: backend_emit_ws
+    events:
+    - ht_update
+    - balance_update
+  - step: frontend_toast
+    message: 🔧 Entretien {type} effectué ! Usure -{reduction}%
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F043
+  tests:
+  - GIVEN wear 15% WHEN monthly THEN wear=10%, ht-=1.0, balance unchanged
+  - GIVEN wear 30% WHEN annual THEN wear=15%, ht-=2.0, balance-=500
+  - GIVEN wear 3% WHEN monthly THEN wear=0% (min 0)
+  - GIVEN ht < 1.0 WHEN monthly THEN 400 HT insuffisants
+  - GIVEN balance < 500 WHEN annual THEN 400 solde insuffisant
+  requires:
+  - vehicle:any
+- id: F045
+  name: Réparer matériel en panne
+  sprint: 12
+  status: spec
+  trigger:
+    type: button
+    label: Réparer {cost} €
+    page: /equipment/:id
+    states:
+      active: is_broken AND has_piece AND balance >= cost AND ht >= 2.0
+      disabled:
+      - condition: not broken
+        tooltip: Pas en panne
+      - condition: no piece
+        tooltip: Pièce détachée manquante
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/vehicles/:id/repair
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - UPDATE vehicle is_broken=false wear=50%
+    - Consume 1 piece
+    - UPDATE player balance ht
+    - INSERT ledger
+  - step: frontend_toast
+    message: 🔧 {vehicle_name} réparé ! Usure ramenée à 50%
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F043
+  tests:
+  - GIVEN broken + piece WHEN repair THEN working wear=50%
+  requires:
+  - vehicle:any
+  - stock:piece_detachee
+- id: F046
+  name: Commander ETA Cultivia
+  sprint: 12
+  status: spec
+  trigger:
+    type: button
+    label: Commander ETA {work_type} — {cost} €
+    page: /parcels/:id (ETA modal)
+    states:
+      active: parcel_owned AND balance >= eta_cost AND ht >= 0.5
+      disabled:
+      - condition: balance < eta_cost
+        tooltip: Solde insuffisant (besoin {eta_cost}€)
+      - condition: ht < 0.5
+        tooltip: HT insuffisants
+      - condition: work already done
+        tooltip: Travail déjà effectué sur cette parcelle
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/eta/order
+    body: '{ parcel_id, work_type: stubble|plow|harrow|sow|fertilize|treat|harvest|bine|roll|press|mulch|irrigate }'
+  - step: backend_idempotency_check
+  - step: backend_calculate_cost
+    logic: 'Grille ETA (€/ha) : déchaumer=45, labourer=65, herser=40, semer=50, engrais=35, traiter=40, récolter_moissonneuse=120,
+      récolter_arracheuse=180, biner=40, rouler=25, presser=35, broyer=30, irriguer=20€/h. HT joueur = 0.5 (commande) + 0.5
+      si récolte.'
+  - step: backend_transaction
+    sql:
+    - Execute work immediately (same as player)
+    - UPDATE player balance -= cost_per_ha × ha, ht -= 0.5
+    - No vehicle wear (ETA equipment)
+    - INSERT ledger (category='eta')
+  - step: frontend_toast
+    message: 🚜 ETA Cultivia — {work_type} effectué sur {ha}ha ! (-{cost}€)
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F035
+  tests:
+  - GIVEN no plow WHEN eta order plow 10ha THEN plowed, balance -= 650
+  - GIVEN no moissonneuse WHEN eta harvest 10ha THEN harvested, balance -= 1200
+  - GIVEN no bineuse WHEN eta bine 10ha THEN bined, balance -= 400
+  - GIVEN no arracheuse WHEN eta harvest betterave 10ha THEN balance -= 1800
+  requires:
+  - parcel
+- id: F047
+  name: Vendre matériel
+  sprint: 12
+  status: spec
+  trigger:
+    type: button
+    label: Vendre {prix} €
+    page: /equipment/:id
+    states:
+      active: vehicle_owned AND ht >= 0.5
+      disabled:
+      - condition: ht < 0.5
+        tooltip: HT insuffisants (besoin 0.5)
+      - condition: vehicle in use
+        tooltip: Matériel en cours d'utilisation
+  chain:
+  - step: frontend_confirm_modal
+    warnings:
+    - Action irréversible — vous vendez ce matériel à l'argus
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/vehicles/:id/sell
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - 'Calculate argus: prix_neuf × (1-wear) × 0.85 × 0.60'
+    - UPDATE player balance+=argus ht-=0.5
+    - DELETE vehicle
+    - INSERT ledger
+  - step: frontend_toast
+    message: 💰 {vehicle_name} vendu pour {argus}€
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  - step: frontend_redirect
+    to: /equipment
+  depends_on:
+  - F043
+  tests:
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - vehicle:any
+- id: F048
+  name: Tick arrivée — animaux en transit arrivent à destination
+  sprint: 3
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 2
+  chain:
+  - step: worker_query
+    sql: SELECT * FROM animal WHERE status='in_transit' AND arrival_at <= NOW()
+  - step: worker_update
+    logic: SET status='available', location_type='building', confirm building_id from purchase order
+  - step: worker_notify
+    events:
+    - 🐄 {N} animaux arrivés à la ferme
+  depends_on:
+  - F002
+  tests:
+  - GIVEN animal in_transit, arrival_at passed THEN status=available, location_type=building + notification
+  - GIVEN animal in_transit, arrival_at future THEN still in_transit
+  requires:
+  - animal:any
+- id: F049
+  name: Tick livraison — matériel en livraison arrive à destination
+  sprint: 12
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 2
+  chain:
+  - step: worker_query
+    sql: SELECT * FROM vehicle WHERE status='in_delivery' AND arrival_at <= NOW()
+  - step: worker_update
+    logic: SET status='available', location confirmed at player farm
+  - step: worker_notify
+    events:
+    - 🚜 {N} matériels livrés à la ferme
+  depends_on:
+  - F043
+  tests:
+  - GIVEN vehicle in_delivery, arrival_at passed THEN status=available + notification
+  - GIVEN vehicle in_delivery, arrival_at future THEN still in_delivery
+  requires:
+  - vehicle:any
+- id: F050
+  name: Tick livraison — marchandises en transit arrivent à destination
+  sprint: 4
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 2
+  chain:
+  - step: worker_query
+    sql: SELECT * FROM delivery WHERE status='in_transit' AND arrival_at <= NOW()
+  - step: worker_update
+    logic: SET status='delivered', transfer goods to player inventory/silo
+  - step: worker_notify
+    events:
+    - '📦 Livraison arrivée : {quantity} {product}'
+  depends_on:
+  - F006
+  tests:
+  - GIVEN delivery in_transit, arrival_at passed THEN goods in inventory + notification
+  - GIVEN delivery in_transit, arrival_at future THEN still in_transit
+  requires: []
+- id: F051
+  name: Remplir bacs à eau au pré
+  sprint: 8
+  status: spec
+  trigger:
+    type: button
+    label: Remplir bacs 💧
+    page: /parcels/:id (pré)
+    states:
+      active: cuve_eau > 0 AND bac_eau_in_pre AND ht >= 0.5 AND has_tractor AND has_tonne_eau
+      disabled:
+      - condition: no bac
+        tooltip: Pas de bac à eau dans ce pré
+      - condition: cuve empty
+        tooltip: Cuve à eau vide
+      - condition: no tonne_eau
+        tooltip: Tonne à eau requise
+      - condition: bacs full
+        tooltip: Bacs déjà pleins
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/fill-water
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE inventory(water) + parcel_bac_eau
+    - UPDATE inventory(water) qty -= transfer_amount
+    - UPDATE parcel_bac_eau qty += transfer_amount
+    - UPDATE player ht -= 0.5
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (tractor_id, tonne_eau_id)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+    - UPDATE inventory SET quantity -= hvc_cost WHERE product='hvc'
+  - step: backend_emit_ws
+    events:
+    - ht_update
+  - step: frontend_toast
+    message: 💧 Bacs remplis ({qty}L) dans {pre_name}
+  depends_on:
+  - F007
+  - F029
+  tests:
+  - GIVEN cuve 5000L, bac 0/500L WHEN fill THEN bac=500L, cuve-=500L
+  - GIVEN cuve empty THEN 400
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - infra:cuve_eau
+  - infra:bac_eau
+  - vehicle:tractor
+  - vehicle:tonne_eau
+  - fuel:hvc
+  - parcel:pre
+- id: F052
+  name: Tick litière — accumulation fumier/lisier quotidienne
+  sprint: 5
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 11
+  chain:
+  - step: worker_query
+    sql: SELECT * FROM building WHERE type IN ('stabulation','porcherie','chevrerie','bergerie','poulailler','clapier','ecurie')
+      AND animal_count > 0
+  - step: worker_update
+    logic: 'For each building: if floor_type=''litiere'': manure += Σ(straw_per_animal_per_day), bedding_quality -= decay_rate.
+      If bedding_quality <= 0: risk_sick for animals. If floor_type=''caillebotis'': lisier += Σ(lisier_per_animal_per_day).
+      If lisier > threshold: risk_sick.'
+  - step: worker_notify
+    events:
+    - 🛏️ Litière dégradée dans {building_name} — remettez de la paille
+    - 💩 Fumier plein dans {building_name} — retirez-le
+    - 💧 Lisier plein dans {building_name} — vidangez
+  depends_on:
+  - F015
+  - F016
+  - F017
+  tests:
+  - GIVEN stabulation litiere, 10 cows THEN manure += 720kg, bedding_quality -= 10
+  - GIVEN bedding_quality=0 THEN animals risk_sick notification
+  - GIVEN caillebotis, 10 cows THEN lisier += 2000L
+  requires:
+  - building:stabulation
+  - animal:any
+- id: F053
+  name: Tick consommation eau quotidienne
+  sprint: 4
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 10
+  chain:
+  - step: worker_query
+    sql: SELECT * FROM building WHERE animal_count > 0
+  - step: worker_update
+    logic: 'For animals in buildings: cuve_eau -= Σ(water_per_animal_per_day). For animals in prés: bac_eau -= Σ(water_per_animal_per_day).
+      If water source=0: days_unwatered += 1, health -= 5. If days_unwatered >= 3: is_sick=true.'
+  - step: worker_notify
+    events:
+    - 💧 Cuve à eau vide — remplissez-la !
+    - 💧 Bacs à eau vides dans {pre_name}
+    - 🏥 {N} animaux déshydratés
+  depends_on:
+  - F009
+  tests:
+  - GIVEN cuve 5000L, 10 cows (200L/day each) THEN cuve=3000L
+  - GIVEN cuve=0 THEN days_unwatered += 1, health -= 5
+  - GIVEN days_unwatered=3 THEN is_sick=true
+  requires:
+  - animal:any
+  - infra:cuve_eau
+- id: F054
+  name: Rouler une parcelle
+  sprint: 10
+  status: spec
+  trigger:
+    type: button
+    label: Rouler ({ht} HT)
+    page: /parcels/:id
+    states:
+      active: crop.state='growing' AND crop.growth_pct BETWEEN 10 AND 50 AND NOT crop.rolled AND has_roller AND ht_ok AND
+        hvc_ok
+      disabled:
+      - condition: no crop or wrong state
+        tooltip: Pas de culture en croissance
+      - condition: growth < 10 or > 50
+        tooltip: Roulage possible entre 10% et 50% de croissance (actuellement {growth}%)
+      - condition: already rolled
+        tooltip: Déjà roulé
+      - condition: no roller
+        tooltip: Rouleau requis
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/roll
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + hvc
+    - CHECK crop.state='growing' AND growth_pct BETWEEN 10 AND 50 AND NOT rolled
+    - UPDATE crop SET rolled=true
+    - UPDATE player ht -= ha × 0.3
+    - UPDATE inventory hvc -= consumption
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (tractor_id, rouleau_id)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+  - step: frontend_toast
+    message: 🔄 Rouleau passé ! Bonus rendement +3-5% attendu
+  depends_on:
+  - F038
+  tests:
+  - GIVEN crop growing 30%, tractor, rouleau WHEN roll THEN rolled=true, ht -= cost
+  - GIVEN crop growing 5% THEN 400 trop tôt
+  - GIVEN crop growing 60% THEN 400 trop tard
+  - GIVEN already rolled THEN 400 déjà roulé
+  - GIVEN no rouleau THEN 400 rouleau requis
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:rouleau
+  - fuel:hvc
+- id: F055
+  name: Épandre fumier sur parcelle
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Épandre fumier ({cost} HT)
+    page: /parcels/:id
+    states:
+      active: fosse_fumier_stock > 0 AND has_epandeur_fumier AND ht_ok AND hvc_ok
+      disabled:
+      - condition: no fosse or empty
+        tooltip: Pas de fumier en fosse
+      - condition: no epandeur_fumier
+        tooltip: Épandeur à fumier requis
+      - condition: already fertilized
+        tooltip: Parcelle déjà fertilisée
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/spread-manure
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + inventory(manure) + parcel
+    - CHECK stock_fumier >= 25T × ha
+    - UPDATE inventory(manure) qty -= 25000 × ha
+    - 'UPDATE parcel_soil: N+=137.5, P+=65, K+=180, Ca+=75, Mg+=50, S+=70 (kg/ha)'
+    - UPDATE crop SET fertilized=true (if active crop)
+    - UPDATE player ht -= ha × 0.5
+    - UPDATE inventory hvc -= consumption
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (tractor_id, epandeur_id)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+  - step: frontend_toast
+    message: 💩 Fumier épandu ! 25T/ha — nutriments rechargés
+  depends_on:
+  - F035
+  tests:
+  - GIVEN fosse 500T, 10ha, tractor, epandeur_fumier WHEN spread THEN stock -= 250T, nutrients up
+  - GIVEN fosse empty THEN 400 fumier insuffisant
+  - GIVEN no epandeur_fumier THEN 400 épandeur requis
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:epandeur_fumier
+  - infra:fosse_fumier
+  - fuel:hvc
+- id: F056
+  name: Épandre lisier sur parcelle
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Épandre lisier ({cost} HT)
+    page: /parcels/:id
+    states:
+      active: fosse_lisier_stock > 0 AND has_tonne_lisier AND ht_ok AND hvc_ok
+      disabled:
+      - condition: no fosse_lisier or empty
+        tooltip: Pas de lisier en fosse
+      - condition: no tonne_lisier
+        tooltip: Tonne à lisier requise
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/spread-slurry
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + inventory(lisier) + parcel
+    - CHECK stock_lisier >= 15m3 × ha (15000L × ha)
+    - UPDATE inventory(lisier) qty -= 15000 × ha
+    - 'UPDATE parcel_soil: N+=75, P+=60, K+=45, Ca+=45, Mg+=15, S+=35 (kg/ha)'
+    - UPDATE crop SET fertilized=true (if active crop)
+    - UPDATE player ht -= ha × 0.5
+    - UPDATE inventory hvc -= consumption
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (tractor_id, tonne_lisier_id)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+  - step: frontend_toast
+    message: 💧 Lisier épandu ! 15m³/ha — nutriments rechargés
+  depends_on:
+  - F035
+  tests:
+  - GIVEN fosse_lisier 200m3, 10ha, tractor, tonne_lisier WHEN spread THEN stock -= 150m3, nutrients up
+  - GIVEN fosse_lisier empty THEN 400 lisier insuffisant
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:tonne_lisier
+  - infra:fosse_lisier
+  - fuel:hvc
+- id: F057
+  name: Forer une parcelle
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Forer {cost} €
+    page: /parcels/:id
+    states:
+      active: NOT parcel.has_source AND balance >= 150 AND ht >= 0.5
+      disabled:
+      - condition: already drilled
+        tooltip: Forage déjà effectué
+      - condition: balance < 150
+        tooltip: Solde insuffisant
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/drill
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + parcel
+    - CHECK parcel.source_level IS NULL
+    - Generate source_level = random 1-10 (1 = source très faible, 10 = source abondante)
+    - UPDATE parcel SET source_level = generated_level
+    - UPDATE player balance -= 150, ht -= 0.5
+    - INSERT ledger
+  - step: frontend_toast
+    message: '⛏️ Forage terminé ! Source niveau {source_level} trouvée !'
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F035
+  tests:
+  - GIVEN parcelle without source WHEN drill THEN source_level set, balance -= 150
+  - GIVEN parcelle already drilled THEN 400 déjà foré
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - parcel
+- id: F058
+  name: Irriguer une parcelle
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Irriguer ({hours}h)
+    page: /parcels/:id
+    states:
+      active: parcel.source_level > 0 AND has_enrouleur AND ht_ok AND hvc_ok
+      disabled:
+      - condition: no source
+        tooltip: Pas de source — effectuez un forage
+      - condition: no enrouleur
+        tooltip: Enrouleur requis
+      - condition: rain_gauge >= 80
+        tooltip: Parcelle déjà bien arrosée
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/irrigate
+    body: '{ hours: 1-24 }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + parcel
+    - CHECK parcel.source_level > 0
+    - water_available = source_level × 100000 L/day
+    - water_needed = hours × 10m3/ha × area_ha
+    - CHECK water_available >= water_needed
+    - UPDATE parcel SET rain_gauge = LEAST(100, rain_gauge + hours)
+    - UPDATE player ht -= 0.5
+    - UPDATE inventory hvc -= consumption
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (tractor_id, enrouleur_id)
+  - step: frontend_toast
+    message: 💧 Irrigation {hours}h — jauge eau +{hours}mm
+  depends_on:
+  - F057
+  tests:
+  - GIVEN source level 5, enrouleur, 10ha WHEN irrigate 12h THEN rain_gauge += 12
+  - GIVEN no source THEN 400 pas de source
+  - GIVEN no enrouleur THEN 400 enrouleur requis
+  - GIVEN rain_gauge=95 WHEN irrigate 10h THEN rain_gauge capped at 100
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:enrouleur
+  - fuel:hvc
+- id: F059
+  name: Presser paille
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Presser paille
+    page: /parcels/:id
+    states:
+      active: straw_on_field > 0 AND has_presse AND ht_ok AND hvc_ok
+      disabled:
+      - condition: no straw
+        tooltip: Pas de paille au sol
+      - condition: no presse
+        tooltip: Presse requise (tracteur + presse)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/press-straw
+    body: '{ bale_type: square_500|square_250|round_300 }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE straw_on_field + inventory + player
+    - Calculate nb_bales = floor(straw_kg / bale_weight)
+    - INSERT inventory (straw bales)
+    - Export nutrients from soil (N, P, K per ton pressed — see PHASE1_CULTURES.md)
+    - DELETE or UPDATE straw_on_field
+    - UPDATE player ht -= ha × 0.4
+    - UPDATE inventory hvc -= consumption
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (tractor_id, presse_id)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+  - step: frontend_toast
+    message: 🌾 {nb_bales} balles pressées ({bale_type})
+  depends_on:
+  - F041
+  tests:
+  - GIVEN 80T straw, presse, tractor WHEN press square_500 THEN 160 bales, straw removed
+  - GIVEN no straw THEN 400 pas de paille
+  - GIVEN no presse THEN 400 presse requise
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:presse
+  - fuel:hvc
+- id: F060
+  name: Broyer paille
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Broyer paille
+    page: /parcels/:id
+    states:
+      active: straw_on_field > 0 AND has_broyeur AND ht_ok AND hvc_ok
+      disabled:
+      - condition: no straw
+        tooltip: Pas de paille au sol
+      - condition: no broyeur
+        tooltip: Broyeur requis
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/mulch-straw
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE straw_on_field + parcel + player
+    - 'Restitute nutrients: wheat→N:7,P:1.7,K:12,Mg:1 kg/T broyée'
+    - UPDATE parcel_soil nutrients
+    - DELETE straw_on_field
+    - UPDATE player ht -= ha × 0.3
+    - UPDATE inventory hvc -= consumption
+    - UPDATE vehicle SET wear += usage_wear WHERE id IN (tractor_id, broyeur_id)
+    - 'Roll panne chance: if wear > 80% → 15% chance is_broken=true'
+  - step: frontend_toast
+    message: 🌿 Paille broyée — nutriments restitués au sol
+  depends_on:
+  - F041
+  tests:
+  - GIVEN 80T straw wheat, broyeur, tractor WHEN mulch THEN nutrients up, straw removed
+  - GIVEN no straw THEN 400 pas de paille
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:broyeur
+  - fuel:hvc
+- id: F061
+  name: Acheter pièce détachée
+  sprint: 12
+  status: spec
+  trigger:
+    type: button
+    label: Acheter pièce {cost} €
+    page: /equipment/:id
+    states:
+      active: vehicle.has_piece_to_replace AND balance >= cost AND ht >= 0.5
+      disabled:
+      - condition: no piece to replace
+        tooltip: Aucune pièce à changer
+      - condition: balance < cost
+        tooltip: Solde insuffisant
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/vehicles/:id/buy-piece
+    body: '{ piece_num: int }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + vehicle_piece
+    - cost = base_piece_cost × (1 + vehicle_age_years × 0.02)
+    - CHECK balance >= cost AND ht >= 0.5
+    - UPDATE player balance -= cost, ht -= 0.5
+    - UPDATE vehicle_piece SET wear_pct = 0 WHERE vehicle_id AND piece_num
+    - INSERT ledger (category='maintenance')
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+  - step: frontend_toast
+    message: 🔩 Pièce
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F043
+  tests:
+  - GIVEN piece worn 100%, balance ok WHEN buy THEN piece wear=0%, balance -= cost
+  - GIVEN no piece to replace THEN 400
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - vehicle:any
+- id: F062
+  name: Souscrire assurance matériel
+  sprint: 12
+  status: spec
+  trigger:
+    type: button
+    label: Assurer {premium} €/an
+    page: /equipment/:id
+    states:
+      active: NOT vehicle.has_active_insurance AND balance >= premium
+      disabled:
+      - condition: already insured
+        tooltip: Assurance déjà active (expire {date})
+      - condition: balance < premium
+        tooltip: Solde insuffisant
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/vehicles/:id/insure
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player
+    - premium = argus × 0.03
+    - CHECK no active insurance for this vehicle
+    - UPDATE player balance -= premium
+    - INSERT vehicle_insurance (vehicle_id, premium, argus_at_sub, expires_at=NOW()+12 months)
+    - INSERT ledger (category='insurance')
+  - step: backend_emit_ws
+    events:
+    - balance_update
+  - step: frontend_toast
+    message: 🛡️ {vehicle_name} assuré ! Prime {premium}€ — couverture 1 an
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F043
+  tests:
+  - GIVEN uninsured tractor argus 29775€ WHEN insure THEN premium=893.25€, balance -= 893.25
+  - GIVEN already insured THEN 409
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - vehicle:any
+- id: F063
+  name: Tick expiration assurance matériel
+  sprint: 12
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 14
+  chain:
+  - step: worker_query
+    sql: SELECT * FROM vehicle_insurance WHERE status='active' AND expires_at <= NOW()
+  - step: worker_update
+    logic: UPDATE vehicle_insurance SET status='expired'
+  - step: worker_notify
+    events:
+    - 🛡️ Assurance expirée sur {vehicle_name} — renouvelez-la
+  depends_on:
+  - F062
+  tests:
+  - GIVEN insurance expires today THEN status=expired + notification
+  - GIVEN insurance expires tomorrow THEN still active
+  requires:
+  - vehicle:any
+- id: F069
+  name: Améliorer un bâtiment
+  sprint: 4
+  status: spec
+  trigger:
+    type: button
+    label: Améliorer niveau {next_level} — {cost} €
+    page: /buildings/:id
+    states:
+      active: building.level < 5 AND balance >= cost AND ht >= 1.0 AND building_empty
+      disabled:
+      - condition: level == 5
+        tooltip: Niveau maximum atteint
+      - condition: balance < cost
+        tooltip: Solde insuffisant
+      - condition: building not empty
+        tooltip: Videz le bâtiment avant amélioration
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/buildings/:id/upgrade
+    body: '{ }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + building
+    - cost = base_cost_per_unit × size × 0.50
+    - CHECK level < 5 AND balance >= cost AND ht >= 1.0
+    - UPDATE player balance -= cost, ht -= 1.0
+    - UPDATE building SET level += 1, energy_monthly = recalculated
+    - INSERT ledger (category='building_upgrade')
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+    - building_alert
+  - step: frontend_toast
+    message: 🏗️ {type} amélioré niveau {level} ! Énergie réduite.
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F001
+  tests:
+  - GIVEN building level 1, balance ok WHEN upgrade THEN level=2, energy reduced
+  - GIVEN building level 5 THEN 400 niveau max
+  - GIVEN building not empty THEN 409 videz le bâtiment
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - building:any
+- id: F070
+  name: Détruire un bâtiment
+  sprint: 4
+  status: spec
+  trigger:
+    type: button
+    label: Détruire (récupérer {recovery} €)
+    page: /buildings/:id (ConfirmModal)
+    states:
+      active: building_empty AND ht >= 1.0
+      disabled:
+      - condition: building not empty
+        tooltip: Videz le bâtiment avant démolition
+  chain:
+  - step: frontend_confirm_modal
+    warnings:
+    - Action irréversible — vous récupérez 10% du coût total
+  - step: generate_idempotency_key
+  - step: api_call
+    method: DELETE
+    route: /api/buildings/:id
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + building
+    - CHECK building is empty (no stock, no animals)
+    - recovery = total_invested × 0.10
+    - UPDATE player balance += recovery, ht -= 1.0
+    - DELETE building
+    - INSERT ledger (category='building_destroy')
+  - step: backend_emit_ws
+    events:
+    - balance_update
+    - ht_update
+  - step: frontend_toast
+    message: 🏚️ {type} détruit — {recovery}€ récupérés
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  - step: frontend_redirect
+    to: /buildings
+  depends_on:
+  - F001
+  tests:
+  - GIVEN empty building WHEN destroy THEN deleted, balance += 10% cost
+  - GIVEN building with stock THEN 409 videz le bâtiment
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - building:any
+- id: F071
+  name: Appeler le négociant en bestiaux
+  sprint: 7
+  status: spec
+  trigger:
+    type: button
+    label: Appeler le négociant 📞
+    page: /market/negociant
+    states:
+      active: NOT called_this_month AND balance >= min_price AND building_has_space
+      disabled:
+      - condition: already called
+        tooltip: Négociant déjà appelé ce mois-ci
+      - condition: no building with space
+        tooltip: Aucun bâtiment avec place disponible
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/market/negociant/call
+  - step: backend_idempotency_check
+  - step: backend_generate_offer
+    logic: 'Generate 4 random breeds from player''s species preference. Each animal: adult, random genetics (average), price
+      = market_price × 1.2. Animals from negociant cannot be resold to other players (negociant_origin=true).'
+  - step: frontend_render
+    components:
+    - NegociantOfferCards (4 animals)
+  - step: api_call_buy
+    method: POST
+    route: /api/market/negociant/buy
+    body: '{ offer_id, building_id }'
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + building_capacity
+    - CHECK balance >= price AND capacity has space
+    - UPDATE player balance -= price, ht -= 0.5
+    - INSERT animal (negociant_origin=true, sell_to_player_locked=true)
+    - UPDATE building_animal_capacity += 1
+    - INSERT ledger (category='purchase')
+  - step: frontend_toast
+    message: 🐄 Animal acheté au négociant ! (non revendable entre joueurs)
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F002
+  tests:
+  - GIVEN not called this month WHEN call THEN 4 offers displayed
+  - GIVEN already called THEN 400 déjà appelé
+  - GIVEN buy from negociant THEN animal.negociant_origin=true
+  requires:
+  - building:stabulation
+- id: F072
+  name: Voir liste bâtiments
+  sprint: 3
+  status: spec
+  trigger:
+    type: navigation
+    page: /buildings
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/buildings
+  - step: frontend_render
+    components:
+    - BuildingList
+    - BuildingCard (type, size, level, wear, capacity, fill_rate)
+  depends_on:
+  - F001
+  tests:
+  - GIVEN player with 3 buildings WHEN GET /api/buildings THEN list with 3 entries
+  - GIVEN player with 0 buildings WHEN GET THEN empty list + CTA 'Construire'
+  requires: []
+- id: F073
+  name: Voir liste matériel
+  sprint: 3
+  status: spec
+  trigger:
+    type: navigation
+    page: /equipment
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/vehicles
+  - step: frontend_render
+    components:
+    - EquipmentList
+    - VehicleCard (type, brand, wear, is_broken, is_sheltered)
+  depends_on: []
+  tests:
+  - GIVEN player with 2 vehicles WHEN GET /api/vehicles THEN list with 2 entries
+  - GIVEN player with 0 vehicles WHEN GET THEN empty list + CTA 'Acheter'
+  requires: []
+- id: F074
+  name: Voir finances
+  sprint: 3
+  status: spec
+  trigger:
+    type: navigation
+    page: /finances
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/finances/summary
+  - step: api_call
+    method: GET
+    route: /api/ledger?page=1&limit=20
+  - step: frontend_render
+    components:
+    - BalanceSummary
+    - LedgerTable
+    - SavingsList
+    - LoansList
+  depends_on: []
+  tests:
+  - GIVEN player with transactions WHEN GET /api/finances/summary THEN balance + ledger + savings + loans
+  - GIVEN new player WHEN GET THEN initial balance shown, empty ledger
+  requires: []
+- id: F064
+  name: Vendre matériel entre joueurs
+  note: "SÉCURITÉ: la propriété du véhicule est re-vérifiée (SELECT FOR UPDATE) au moment de l'achat."
+  sprint: 15
+  status: spec
+  trigger:
+    type: button
+    label: Mettre en vente {prix} €
+    page: /equipment/:id
+    states:
+      active: NOT is_broken AND ht >= 0.5
+      disabled:
+      - condition: is_broken
+        tooltip: Matériel en panne — réparez-le d'abord
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/vehicles/:id/list-for-sale
+    body: '{ asking_price: number }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + vehicle
+    - CHECK NOT is_broken
+    - UPDATE vehicle SET for_sale=true, asking_price=$price
+    - UPDATE player ht -= 0.5
+    - INSERT INTO announcement (type='vehicle_sale')
+  - step: frontend_toast
+    message: 📢 {vehicle_name} mis en vente à {prix}€ (argus {argus}€)
+  depends_on:
+  - F043
+  tests:
+  - GIVEN working tractor WHEN list THEN for_sale=true
+  - GIVEN broken tractor THEN 400
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - vehicle:any
+- id: F065
+  name: Clôturer épargne
+  sprint: 9
+  status: spec
+  trigger:
+    type: button
+    label: Clôturer (+{amount} €)
+    page: /finances/savings
+    states:
+      active: savings.status == 'active'
+      disabled:
+      - condition: no active savings
+        tooltip: Aucune épargne active
+      - condition: savings already matured
+        tooltip: Épargne déjà arrivée à maturité
+  chain:
+  - step: frontend_confirm_modal
+    warnings:
+    - 'Clôture anticipée : vous perdez tous les intérêts non versés'
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/savings/:id/close
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + savings
+    - CREDIT player.balance by savings.amount (capital only, NO interest)
+    - UPDATE savings SET status='closed_early', closed_at=NOW()
+    - INSERT ledger (category='savings_early_close')
+  - step: backend_emit_ws
+    events:
+    - balance_update
+  - step: frontend_toast
+    message: 💰 Épargne clôturée — {amount}€ restitués (0€ intérêts)
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F032
+  tests:
+  - GIVEN active savings 80k€ after 50d WHEN close THEN balance += 80k, 0 interest
+  - GIVEN matured savings THEN 400 already matured
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires: []
+- id: F066
+  name: Tick intérêts épargne
+  sprint: 9
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 15
+  chain:
+  - step: worker_query
+    sql: SELECT * FROM savings WHERE status='active' AND next_interest_at <= NOW()
+  - step: worker_update
+    logic: 'For each savings: interest = amount × (rate/100). CREDIT player.balance by interest. UPDATE savings total_interest_paid
+      += interest, next_interest_at += 84 days. If next_interest_at > matures_at: CREDIT player.balance by amount, SET status=''matured''.'
+  - step: worker_notify
+    events:
+    - 💰 Intérêts épargne versés (+{interest}€)
+    - 💰 Épargne arrivée à maturité ! {amount}€ + {total_interest}€ versés
+  depends_on:
+  - F032
+  tests:
+  - GIVEN savings 100k€ 5% at anniversary THEN +5000€ interest
+  - GIVEN savings at maturity THEN capital + interest returned, status=matured
+  requires: []
+- id: F067
+  name: Tick mensuel économique
+  sprint: 9
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 16
+    condition: 1er du mois Cultivia (chaque lundi)
+  chain:
+  - step: worker_process_salaries
+    sql: 'For each employee: IF player.balance >= salary THEN debit salary ELSE fire employee + notification'
+  - step: worker_process_loan_payments
+    sql: 'For each active loan: monthly_principal = principal/duration, monthly_interest = remaining × rate/12, debit total.
+      IF insufficient funds: notification impayé'
+  - step: worker_process_energy
+    sql: 'For each player: total_kwh = SUM(building.energy_monthly × season_factor), cost = total_kwh × 0.08, debit cost'
+  - step: worker_process_building_wear
+    sql: 'For each building: UPDATE building SET wear_pct = LEAST(100, wear_pct + 0.5)'
+  - step: worker_process_taxes
+    sql: 'For each player: tax = progressive_tax(total_ha), msa = monthly_revenue × 0.05, debit tax + msa'
+  - step: worker_notify
+    events:
+    - 📊 Prélèvements mensuels — Salaires {sal}€, Prêt {loan}€, Énergie {energy}€, Taxes {tax}€
+    - ⚠️ Employé {name} licencié (fonds insuffisants)
+    - ⚠️ Impayé prêt
+  depends_on:
+  - F027
+  - F033
+  tests:
+  - GIVEN 1 employee 1600€, balance 5000€ WHEN tick THEN balance -= 1600
+  - GIVEN 1 employee, balance 500€ WHEN tick THEN employee fired
+  - GIVEN loan 50k€ 3% 48m WHEN tick THEN monthly payment debited
+  - GIVEN 3 buildings, summer WHEN tick THEN energy bill debited
+  - GIVEN 50ha, CA 10k€ WHEN tick THEN tax 250€ + MSA 500€ debited
+  requires: []
+- id: F068
+  name: Acheter HVC (carburant)
+  sprint: 4
+  status: spec
+  trigger:
+    type: button
+    label: Acheter {qty}L — {total} €
+    page: /buildings (cuve HVC)
+    states:
+      active: has_cuve_hvc AND balance >= total
+      disabled:
+      - condition: no cuve HVC
+        tooltip: Construisez une cuve HVC
+      - condition: balance < total
+        tooltip: Solde insuffisant
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/market/buy
+    body: '{ product: ''hvc'', quantity: number }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - FOR UPDATE player + inventory(hvc)
+    - price_per_liter = 0.60 (Coop SimAgri) or CAR price (0.36-0.55)
+    - storable = MIN(quantity, cuve_capacity - current_stock)
+    - lost = quantity - storable (excédent perdu si > capacité)
+    - UPDATE player balance -= quantity × price_per_liter
+    - UPDATE inventory(hvc) quantity += storable
+    - INSERT ledger (category='purchase')
+  - step: backend_emit_ws
+    events:
+    - balance_update
+  - step: frontend_toast
+    message: '⛽ {storable}L HVC achetés ({total}€){lost > 0 ? '' — ⚠️ '' + lost + ''L perdus (cuve pleine)'' : ''''}'
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F001
+  tests:
+  - GIVEN cuve 2000L empty WHEN buy 1000L at 0.60€ THEN stock=1000L, balance-=600
+  - GIVEN cuve 2000L at 1800L WHEN buy 500L THEN stock=2000L, 300L lost, balance-=300
+  - GIVEN no cuve HVC THEN 400
+  - GIVEN same idempotency key ×2 THEN no double deduction
+  requires:
+  - infra:cuve_hvc
+- id: F075
+  name: Tick accumulation fumier/litière
+  sprint: 5
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 17
+  chain:
+  - step: worker_query
+    sql: SELECT b.* FROM building b WHERE b.floor_type='litiere' AND b.animal_count > 0
+  - step: worker_update
+    logic: 'For each building: manure_produced = SUM(animal.straw_per_day × 1.2). building.manure_stock += manure_produced.
+      building.bedding_quality -= 5. IF manure_stock > capacity × 0.8 THEN notify.'
+  - step: worker_notify
+    events:
+    - ⚠️ Fumier accumulé dans {building} — pensez à le retirer
+  depends_on:
+  - F015
+  tests:
+  - GIVEN building 10 cows, bedding OK WHEN tick THEN manure_stock += 864kg, bedding_quality -= 5
+  - GIVEN manure_stock > 80% capacity THEN notification sent
+  requires:
+  - building:stabulation
+  - animal:any
+- id: F076
+  name: Tick alertes ressources critiques
+  sprint: 4
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 18
+  chain:
+  - step: worker_check_hvc
+    logic: IF hvc_stock < 50L THEN notify '⚠️ Carburant HVC bas ({stock}L)'
+  - step: worker_check_overcrowding
+    logic: 'For each building: IF animal_count > max_capacity THEN notify ''🔴 {building} en surpopulation ({count}/{max})'''
+  - step: worker_check_harvest_risk
+    logic: 'For each crop >= 90% growth: IF player has no working harvester THEN notify ''🔴 {crop} prête — moissonneuse en
+      panne !'''
+  - step: worker_check_treasury
+    logic: IF balance < 3 × estimated_monthly_charges THEN notify '⚠️ Trésorerie tendue — {months} mois de charges restants'
+  - step: worker_check_unsheltered
+    logic: 'For each vehicle NOT sheltered: notify ''ℹ️ {vehicle} non abrité — usure accélérée'''
+  - step: worker_check_wear_critical
+    logic: 'For each vehicle WHERE wear > 70%: notify ''⚠️ {vehicle} usure {wear}% — risque de panne imminent, entretenez-le !'''
+  - step: worker_check_milk_tank
+    logic: IF milk_tank > 80% capacity THEN notify '⚠️ Cuve lait à {pct}% — vendez ou traitez'
+  - step: worker_check_unfed
+    logic: 'For each animal WHERE days_unfed >= 2: notify ''🔴 {animal} non nourri depuis {days}j'''
+  depends_on: []
+  tests:
+  - GIVEN hvc=30L THEN notification HVC bas
+  - GIVEN building 12/10 animals THEN notification surpopulation
+  - GIVEN crop 95% + broken harvester THEN notification récolte
+  - GIVEN balance 2000€, charges 1500€/mois THEN notification trésorerie
+  requires: []
+- id: F077
+  name: Tick variation cours marché
+  sprint: 10
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 19
+    condition: quotidien
+  chain:
+  - step: worker_update
+    logic: 'For each product: noise = random(-0.05, +0.05). demand_factor = f(total_sold_last_7d, total_produced_last_7d).
+      new_price = base_price × (1 + noise + demand_factor). CLAMP(new_price, base × 0.7, base × 1.5). UPDATE market_price.'
+  - step: worker_notify
+    events:
+    - 📈 Cours {product} en hausse ({delta}%)
+    - 📉 Cours {product} en baisse ({delta}%)
+  depends_on: []
+  tests:
+  - GIVEN base blé 100€ WHEN tick THEN price between 70€ and 150€
+  - GIVEN high demand (sold >> produced) THEN price increases
+  requires: []
+- id: F078
+  name: Composter du fumier
+  sprint: 16
+  status: spec
+  trigger:
+    type: button
+    label: Composter {qty}T
+    page: /buildings/compost
+    states:
+      active: has_compost_area AND manure_stock >= qty AND ht >= 1.0
+      disabled:
+      - condition: no compost area
+        tooltip: Aire de compostage requise
+      - condition: manure_stock < qty
+        tooltip: Fumier insuffisant (besoin {qty}T, disponible {stock}T)
+      - condition: ht < 1.0
+        tooltip: HT insuffisants (besoin 1.0)
+      - condition: compost_batch_active
+        tooltip: Compostage déjà en cours (prêt dans {days}j)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/compost/start
+    body: '{ quantity_tonnes: number }'
+  - step: backend_transaction
+    sql:
+    - DEBIT fosse_fumier by qty (3T fumier → 1T compost)
+    - INSERT compost_batch (status='composting', ready_at=NOW()+14d)
+    - UPDATE player ht -= 1.0
+  - step: frontend_toast
+    message: 🌱 Compostage lancé — {result_qty}T prêtes dans 14 jours
+  depends_on:
+  - F016
+  tests:
+  - GIVEN 45T fumier WHEN compost THEN 15T compost in 14d
+  - GIVEN 0T fumier THEN 400
+  requires:
+  - infra:fosse_fumier
+  - infra:aire_compostage
+- id: F079
+  name: Rembourser prêt par anticipation
+  sprint: 9
+  status: spec
+  trigger:
+    type: button
+    label: Rembourser ({remaining}€ + {penalty}€ pénalité)
+    page: /finances/loans
+    states:
+      active: has_active_loan AND balance >= remaining × 1.03
+      disabled:
+      - condition: no active loan
+        tooltip: Aucun prêt actif
+      - condition: balance < remaining × 1.03
+        tooltip: Solde insuffisant (besoin {total}€ = {remaining}€ + {penalty}€ pénalité)
+  chain:
+  - step: frontend_confirm_modal
+    warnings:
+    - Pénalité de 3% sur le capital restant dû ({penalty}€)
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/loans/:id/early-repay
+  - step: backend_transaction
+    sql:
+    - total = remaining_principal × 1.03
+    - UPDATE player balance -= total
+    - UPDATE loan SET status='repaid_early', closed_at=NOW()
+    - INSERT ledger (category='loan_early_repay')
+  - step: frontend_toast
+    message: 🏦 Prêt remboursé — {total}€ (dont {penalty}€ pénalité)
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F033
+  tests:
+  - GIVEN loan 50k€ remaining 30k€ WHEN early repay THEN balance -= 30900€
+  - GIVEN balance < total THEN 400
+  requires: []
+- id: F080
+  name: Vendre animal(aux) entre joueurs
+  note: "Vente par lot supportée. SÉCURITÉ: propriété re-vérifiée (SELECT FOR UPDATE) au moment de l'achat."
+  sprint: 7
+  status: spec
+  trigger:
+    type: button
+    label: Mettre en vente {count} animal(aux) — {prix} €/unité
+    page: /animals (sélection multiple) ou /animals/:id
+    states:
+      active: animal_owned AND NOT dead AND ht >= 0.5
+      disabled:
+      - condition: animal dead
+        tooltip: Animal mort
+      - condition: negociant_origin
+        tooltip: Animal du négociant — non revendable entre joueurs
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animals/list-for-sale
+    body: '{ animal_ids: uuid[], asking_price_per_unit: number }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - CHECK all animals owned AND NOT negociant_origin AND NOT dead
+    - UPDATE animal SET for_sale=true, asking_price=$price WHERE id IN ($ids)
+    - UPDATE player ht -= 0.5
+    - INSERT INTO listing (type='animal_lot', quantity=count)
+  - step: frontend_toast
+    message: 📢 {count} animal(aux) mis en vente à {prix}€/unité
+  depends_on:
+  - F002
+  tests:
+  - GIVEN owned animal WHEN list THEN for_sale=true
+  - GIVEN negociant_origin THEN 400
+  requires:
+  - animal:any
+- id: F081
+  name: Acheter animal entre joueurs
+  note: "SÉCURITÉ: la propriété de l'animal est re-vérifiée (SELECT FOR UPDATE) au moment de l'achat."
+  sprint: 7
+  status: spec
+  trigger:
+    type: button
+    label: Acheter {prix} €
+    page: /market/animals/players
+    states:
+      active: balance >= total AND building_has_space AND has_trailer AND has_tractor AND hvc >= hvc_cost
+      disabled:
+      - condition: balance < total
+        tooltip: Solde insuffisant
+      - condition: no building with space
+        tooltip: Aucun bâtiment avec place
+      - condition: no trailer
+        tooltip: Bétaillère requise
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_calculate_transport
+    logic: distance_km = haversine(seller_prefecture, buyer_prefecture)
+  - step: backend_transaction
+    sql:
+    - Transfer animal ownership
+    - UPDATE buyer balance -= price + transport
+    - UPDATE seller balance += price
+    - UPDATE animal owner_id, status='in_transit'
+    - UPDATE vehicles wear, hvc
+    - INSERT ledger ×2
+  - step: frontend_toast
+    message: 🐄 {name} achetée à {seller} ! Transport {distance}km
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F080
+  tests:
+  - GIVEN listing active, buyer has space+trailer WHEN buy THEN transferred
+  - GIVEN no space THEN 400
+  requires:
+  - vehicle:tractor
+  - vehicle:trailer
+  - fuel:hvc
+  - building:stabulation
+- id: F082
+  name: Tondre mouton (laine)
+  sprint: 7
+  status: spec
+  trigger:
+    type: button
+    label: Tondre tout le troupeau
+    page: /animals (batch) ou /buildings/:id
+    states:
+      active: has_shearable_sheep AND ht >= ht_cost
+      disabled:
+      - condition: no shearable sheep
+        tooltip: Aucun mouton à tondre (laine pas prête)
+      - condition: ht insufficient
+        tooltip: HT insuffisants (besoin {ht_cost})
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_calculate_ht
+    logic: 'ht_cost = 0.5 + (shearable_count × 0.02). Ex: 20 brebis = 0.9 HT'
+  - step: backend_transaction
+    sql:
+    - SELECT animals WHERE species=ovin AND wool_ready FOR UPDATE
+    - UPDATE animal SET last_sheared_at=NOW() for each
+    - total_wool = SUM(animal.wool_per_shear)
+    - INSERT INTO wool_production
+    - UPDATE inventory(wool) qty += total_wool
+    - UPDATE player ht -= ht_cost
+  - step: frontend_toast
+    message: 🐑 {count} moutons tondus — {qty}kg de laine récoltés !
+  depends_on:
+  - F004
+  tests:
+  - GIVEN 20 ovin wool_ready WHEN shear THEN all sheared, 0.9 HT consumed
+  - GIVEN 1 ovin wool_ready WHEN shear THEN 0.52 HT
+  - GIVEN no wool_ready THEN 400
+  requires:
+  - animal:ovin
+- id: F083
+  name: Ramasser œufs
+  sprint: 7
+  status: spec
+  trigger:
+    type: button
+    label: Ramasser œufs
+    page: /buildings/:id
+    states:
+      active: has_poultry AND eggs_available AND ht >= 0.3 AND has_atelier_oeufs
+      disabled:
+      - condition: no poultry
+        tooltip: Pas de volailles
+      - condition: no eggs
+        tooltip: Pas d'œufs à ramasser
+      - condition: no atelier_oeufs
+        tooltip: Atelier œufs requis (conditionnement + stockage)
+      - condition: atelier_oeufs full
+        tooltip: Stockage œufs plein ({current}/{capacity})
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - SELECT eggs FROM egg_production WHERE building_id FOR UPDATE
+    - SELECT capacity, current FROM piece_stockage_oeuf FOR UPDATE
+    - CHECK current + eggs <= capacity
+    - UPDATE inventory(eggs) qty += collected, caliber based on hen age
+    - UPDATE egg_production SET collected_at=NOW()
+    - UPDATE player ht -= 0.3
+  - step: frontend_toast
+    message: 🥚 {qty} œufs ramassés ! (calibre {caliber})
+  depends_on:
+  - F004
+  tests:
+  - GIVEN 10 hens, eggs available, conditionnement+stockage WHEN collect THEN eggs in inventory with caliber
+  - GIVEN no eggs THEN 400
+  - GIVEN no salle_conditionnement THEN 400
+  - GIVEN stockage full THEN 400
+  requires:
+  - animal:volaille
+  - building:poulailler
+  - infra:atelier_oeufs
+- id: F084
+  name: Faucher herbe
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Faucher ({ht} HT)
+    page: /parcels/:id
+    states:
+      active: parcel.type='pre' AND grass_height >= min AND has_faucheuse AND ht_ok AND hvc_ok
+      disabled:
+      - condition: grass too short
+        tooltip: Herbe trop courte (hauteur {current}, minimum {min})
+      - condition: no faucheuse
+        tooltip: Faucheuse requise
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - UPDATE parcel SET grass_height=0
+    - INSERT straw_on_field (type='grass', qty=yield_per_ha × ha)
+    - UPDATE player ht, vehicle wear, inventory hvc
+  - step: frontend_toast
+    message: 🌿 {qty}T d'herbe fauchée !
+  depends_on:
+  - F038
+  tests:
+  - GIVEN pré with grass, faucheuse WHEN mow THEN grass on field
+  - GIVEN grass too short THEN 400
+  requires:
+  - parcel:pre
+  - vehicle:tractor
+  - vehicle:faucheuse
+  - fuel:hvc
+- id: F085
+  name: Ensiler herbe
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Ensiler
+    page: /parcels/:id
+    states:
+      active: grass_on_field > 0 AND has_ensileuse AND silo_has_space AND ht_ok AND hvc_ok
+      disabled:
+      - condition: no grass on field
+        tooltip: Pas d'herbe fauchée au sol
+      - condition: no ensileuse
+        tooltip: Ensileuse requise
+      - condition: silo full
+        tooltip: Silo plein
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - DELETE straw_on_field WHERE type='grass'
+    - UPDATE inventory(ensilage_herbe) qty += production
+    - UPDATE player ht, vehicle wear, inventory hvc
+  - step: frontend_toast
+    message: 🌿 {qty}T d'ensilage d'herbe stockées !
+  depends_on:
+  - F084
+  tests:
+  - GIVEN grass on field, ensileuse, silo space WHEN ensile THEN ensilage in silo
+  - GIVEN no grass THEN 400
+  requires:
+  - parcel:pre
+  - vehicle:ensileuse
+  - building:silo
+  - fuel:hvc
+- id: F086
+  name: Vendre parcelle
+  sprint: 10
+  status: spec
+  trigger:
+    type: button
+    label: Vendre {prix} €
+    page: /parcels/:id
+    states:
+      active: parcel_owned AND no_active_crop AND ht >= 0.5
+      disabled:
+      - condition: crop active
+        tooltip: Récoltez la culture avant de vendre
+      - condition: animals on parcel
+        tooltip: Retirez les animaux du pré
+  chain:
+  - step: generate_idempotency_key
+  - step: frontend_confirm_modal
+    warnings:
+    - Action irréversible — vous récupérez la valeur foncière
+  - step: backend_transaction
+    sql:
+    - recovery = parcel.purchase_price × 0.80
+    - UPDATE player balance += recovery, ht -= 0.5
+    - DELETE parcel
+    - INSERT ledger
+  - step: frontend_toast
+    message: 🌾 Parcelle vendue — {recovery}€ récupérés
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+    - step: frontend_redirect
+    to: /parcels
+  depends_on:
+  - F035
+  tests:
+  - GIVEN empty parcel WHEN sell THEN deleted, balance += 80% price
+  - GIVEN crop active THEN 400
+  requires:
+  - parcel
+- id: F087
+  name: Louer parcelle à un joueur
+  sprint: 10
+  status: spec
+  trigger:
+    type: button
+    label: Mettre en location {loyer} €/mois
+    page: /parcels/:id
+    states:
+      active: parcel_owned AND no_active_crop AND NOT already_rented
+      disabled:
+      - condition: crop active
+        tooltip: Récoltez avant de louer
+      - condition: already rented
+        tooltip: Déjà en location
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - INSERT INTO listing (type='parcel_rent', price=loyer)
+    - UPDATE parcel SET for_rent=true
+  - step: frontend_toast
+    message: 📢 Parcelle mise en location à {loyer}€/mois
+  depends_on:
+  - F035
+  tests:
+  - GIVEN owned parcel WHEN list THEN for_rent=true
+  - GIVEN crop active THEN 400
+  requires:
+  - parcel
+- id: F088
+  name: Planter une haie
+  sprint: 10
+  status: spec
+  trigger:
+    type: button
+    label: Planter haie {cost} €
+    page: /parcels/:id
+    states:
+      active: parcel_owned AND balance >= cost AND ht >= 1.0
+      disabled:
+      - condition: balance < cost
+        tooltip: Solde insuffisant
+      - condition: already has hedge
+        tooltip: Haie déjà plantée
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - INSERT INTO hedge (parcel_id, length_m, planted_at)
+    - UPDATE player balance -= cost, ht -= 1.0
+    - INSERT ledger
+  - step: frontend_toast
+    message: 🌳 Haie plantée ! Bonus biodiversité +5%
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F035
+  tests:
+  - GIVEN parcel without hedge WHEN plant THEN hedge created
+  - GIVEN already has hedge THEN 400
+  requires:
+  - parcel
+- id: F089
+  name: Acheter matériel occasion (entre joueurs)
+  sprint: 12
+  status: spec
+  trigger:
+    type: button
+    label: Acheter {prix} €
+    page: /equipment/market
+    states:
+      active: balance >= prix + delivery_cost AND ht >= 1.0
+      disabled:
+      - condition: balance < total
+        tooltip: Solde insuffisant
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_calculate_delivery
+    logic: distance_km = haversine(seller, buyer), delivery_cost = distance_km × 0.80
+  - step: backend_transaction
+    sql:
+    - Transfer vehicle ownership
+    - UPDATE buyer balance -= prix + delivery, ht -= 1.0
+    - UPDATE seller balance += prix
+    - UPDATE vehicle owner_id, status='in_delivery'
+    - INSERT ledger ×2
+  - step: frontend_toast
+    message: 🚜 {type} acheté à {seller} ! Livraison {distance}km
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F064
+  tests:
+  - GIVEN listing active, buyer balance ok WHEN buy THEN transferred
+  - GIVEN balance < total THEN 400
+  requires: []
+- id: F090
+  name: Louer matériel (entre joueurs)
+  sprint: 12
+  status: spec
+  trigger:
+    type: button
+    label: Louer {prix} €/jour
+    page: /equipment/:id
+    states:
+      active: vehicle_owned AND NOT is_broken AND NOT for_sale AND ht >= 0.5
+      disabled:
+      - condition: is_broken
+        tooltip: Réparez d'abord
+      - condition: for_sale
+        tooltip: Retirez l'annonce de vente
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - INSERT INTO listing (type='vehicle_rent', price_per_day)
+    - UPDATE vehicle SET for_rent=true
+  - step: frontend_toast
+    message: 📢 {vehicle} mis en location à {prix}€/jour
+  depends_on:
+  - F043
+  tests:
+  - GIVEN working vehicle WHEN list THEN for_rent=true
+  - GIVEN broken THEN 400
+  requires:
+  - vehicle:any
+- id: F091
+  name: Créer annonce stock (vente produits entre joueurs)
+  note: "SÉCURITÉ: le stock du vendeur est re-vérifié (SELECT FOR UPDATE) au moment de l'achat par l'acheteur, pas seulement à la création."
+  sprint: 13
+  status: spec
+  trigger:
+    type: button
+    label: Mettre en vente
+    page: /market/stock
+    states:
+      active: stock > 0 AND ht >= 0.5
+      disabled:
+      - condition: no stock
+        tooltip: Aucun produit en stock
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - INSERT INTO listing (type='product', product, quantity, price_per_unit)
+    - UPDATE player ht -= 0.5
+  - step: frontend_toast
+    message: 📢 {qty} {product} mis en vente à {price}€/unité
+  depends_on: []
+  tests:
+  - GIVEN stock > 0 WHEN list THEN listing created
+  - GIVEN no stock THEN 400
+  requires: []
+- id: F092
+  name: Souscrire contrat laiterie
+  sprint: 13
+  status: spec
+  trigger:
+    type: button
+    label: Souscrire contrat
+    page: /market/dairy
+    states:
+      active: has_milk_production AND NOT has_active_contract
+      disabled:
+      - condition: no milk production
+        tooltip: Pas de production laitière
+      - condition: contract active
+        tooltip: Contrat déjà actif
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - INSERT INTO dairy_contract (player_id, dairy_id, price_per_liter, duration)
+  - step: frontend_toast
+    message: 🥛 Contrat laiterie signé ! {price}€/L pendant {duration} mois
+  depends_on:
+  - F023
+  tests:
+  - GIVEN milk production, no contract WHEN subscribe THEN contract active
+  - GIVEN contract active THEN 400
+  requires:
+  - infra:salle_traite
+- id: F093
+  name: Rejoindre une CAR
+  sprint: 13
+  status: spec
+  trigger:
+    type: button
+    label: Rejoindre
+    page: /cooperatives
+    states:
+      active: NOT member_of_car
+      disabled:
+      - condition: already member
+        tooltip: Déjà membre d'une CAR
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/cooperatives
+    response_includes:
+    - name
+    - member_count
+    - hvc_price
+    - engrais_discount_pct
+    - semences_discount_pct
+  - step: frontend_render
+    components:
+    - CoopList (nom, membres, prix HVC, remises engrais/semences)
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - INSERT INTO coop_member (player_id, cooperative_id)
+  - step: frontend_toast
+    message: 🤝 Vous avez rejoint la CAR {name} ! HVC à {hvc_price}€/L
+  depends_on: []
+  tests:
+  - GIVEN not member WHEN join THEN member
+  - GIVEN already member THEN 400
+  requires: []
+- id: F094
+  name: Ajouter ami
+  sprint: 9
+  status: spec
+  trigger:
+    type: button
+    label: Ajouter en ami
+    page: /players/:id
+    states:
+      active: NOT already_friend AND NOT self
+      disabled:
+      - condition: already friend
+        tooltip: Déjà ami
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - INSERT INTO friendship (player_a, player_b, status='pending')
+  - step: backend_emit_ws
+    events:
+    - friend_request
+  - step: frontend_toast
+    message: 👋 Demande d'ami envoyée à {name}
+  depends_on: []
+  tests:
+  - GIVEN not friend WHEN add THEN pending
+  - GIVEN already friend THEN 400
+  requires: []
+- id: F095
+  name: Voir classements
+  sprint: 9
+  status: spec
+  trigger:
+    type: navigation
+    page: /rankings
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/rankings?type=general&page=1&department_id=optional
+  - step: frontend_render
+    components:
+    - RankingTabs (général, élevage, cultures, finances, génétique)
+    - RankingFilters (national / par département / par région)
+    - RankingTable
+  depends_on: []
+  tests:
+  - GIVEN server active WHEN GET /api/rankings THEN paginated list
+  requires: []
+- id: F096
+  name: Voir fiche joueur
+  sprint: 9
+  status: spec
+  trigger:
+    type: navigation
+    page: /players/:id
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/players/:id/profile
+    response_includes:
+    - username
+    - prefecture
+    - farm_stats
+    - rankings
+    - animals_count
+    - parcels_count
+  - step: frontend_render
+    components:
+    - PlayerProfile
+    - FarmStats
+    - ActionButtons (ajouter ami, envoyer message)
+  depends_on: []
+  tests:
+  - GIVEN player exists WHEN GET THEN public profile
+  - GIVEN player not found THEN 404
+  requires: []
+- id: F097
+  name: Voir statistiques carcasses
+  sprint: 7
+  status: spec
+  trigger:
+    type: navigation
+    page: /animals/carcass-stats
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/animals/carcass-stats
+  - step: frontend_render
+    components:
+    - CarcassTable (race, poids moyen, conformation, engraissement, prix moyen)
+    - CarcassChart
+  depends_on: []
+  tests:
+  - GIVEN player with slaughter history WHEN GET THEN stats displayed
+  requires: []
+- id: F098
+  name: Voir qualité lait détaillée
+  sprint: 7
+  status: spec
+  trigger:
+    type: navigation
+    page: /animals/milk-quality
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/animals/milk-quality
+  - step: frontend_render
+    components:
+    - MilkQualityTable (TB, TP, cellules, germes)
+    - MilkQualityChart
+  depends_on: []
+  tests:
+  - GIVEN player with milk production WHEN GET THEN quality stats
+  requires: []
+- id: F099
+  name: Vendre laine au Marché Central
+  sprint: 7
+  status: spec
+  trigger:
+    type: button
+    label: Vendre laine {total} €
+    page: /animals/productions
+    states:
+      active: wool_stock > 0 AND ht >= 0.5
+      disabled:
+      - condition: no wool
+        tooltip: Pas de laine en stock — tondez vos moutons
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/market/sell
+    body: '{ product: ''wool'', quantity }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - SELECT quantity FROM inventory WHERE product='wool' FOR UPDATE
+    - UPDATE player balance += revenue, ht -= 0.5
+    - UPDATE inventory qty -= sold
+    - INSERT ledger
+  - step: frontend_toast
+    message: 🐑 {qty}kg de laine vendus pour {total}€
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F082
+  tests:
+  - GIVEN 50kg wool WHEN sell THEN balance += 50 × 0.45
+  - GIVEN no wool THEN 400
+  requires:
+  - stock:laine
+- id: F100
+  name: Vendre œufs au Marché Central
+  sprint: 7
+  status: spec
+  trigger:
+    type: button
+    label: Vendre œufs {total} €
+    page: /animals/productions
+    states:
+      active: egg_stock > 0 AND ht >= 0.5
+      disabled:
+      - condition: no eggs
+        tooltip: Pas d'œufs en stock — ramassez-les d'abord
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/market/sell
+    body: '{ product: ''eggs'', quantity, caliber: ''S''|''M''|''L''|''XL'' }'
+  - step: backend_idempotency_check
+  - step: backend_calculate_price
+    logic: 'price_per_egg = base × caliber_factor (S=0.08, M=0.10, L=0.13, XL=0.16)'
+  - step: backend_transaction
+    sql:
+    - SELECT quantity FROM inventory WHERE product='eggs' FOR UPDATE
+    - UPDATE player balance += revenue, ht -= 0.5
+    - UPDATE inventory qty -= sold
+    - INSERT ledger
+  - step: frontend_toast
+    message: 🥚 {qty} œufs ({caliber}) vendus pour {total}€
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F083
+  tests:
+  - GIVEN 100 eggs XL WHEN sell THEN balance += 100 × 0.16
+  - GIVEN no eggs THEN 400
+  requires:
+  - stock:oeufs
+- id: F101
+  name: Biner une parcelle
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Biner ({ht} HT)
+    page: /parcels/:id
+    states:
+      active: crop.type IN ('betterave','pomme_de_terre') AND crop.growth_pct BETWEEN 15 AND 60 AND has_bineuse AND ht_ok AND hvc_ok
+      disabled:
+      - condition: wrong crop
+        tooltip: Binage réservé aux betteraves et pommes de terre
+      - condition: growth out of range
+        tooltip: Binage possible entre 15% et 60% de croissance
+      - condition: no bineuse
+        tooltip: Bineuse requise
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - UPDATE crop SET bined=true, bine_count += 1
+    - UPDATE player ht, vehicle wear, inventory hvc
+  - step: frontend_toast
+    message: 🌱 Binage effectué ! (passage {count})
+  depends_on:
+  - F038
+  tests:
+  - GIVEN betterave 30%, bineuse WHEN bine THEN bined, yield bonus +3%
+  - GIVEN blé THEN 400 culture non compatible
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:bineuse
+  - fuel:hvc
+- id: F102
+  name: Défaner pommes de terre
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Défaner
+    page: /parcels/:id
+    states:
+      active: crop.type='pomme_de_terre' AND crop.growth_pct >= 80 AND NOT defaned AND (has_broyeur OR has_pulverisateur) AND ht_ok
+      disabled:
+      - condition: not pomme_de_terre
+        tooltip: Défanage réservé aux pommes de terre
+      - condition: growth < 80%
+        tooltip: Trop tôt (croissance {growth}%, minimum 80%)
+      - condition: already defaned
+        tooltip: Déjà défané
+      - condition: no equipment
+        tooltip: Broyeur (mécanique) ou pulvérisateur + désherbant défanage (chimique) requis
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/parcels/:id/defane
+    body: '{ method: ''mechanical''|''chemical'' }'
+  - step: backend_transaction
+    sql:
+    - 'mechanical: requires broyeur, no product consumed'
+    - 'chemical: requires pulverisateur + 2.5L désherbant défanage/ha, CHECK no wind'
+    - UPDATE crop SET defaned=true, defane_method=$method
+    - UPDATE player ht, vehicle wear, inventory hvc
+    - 'If chemical: UPDATE inventory desherbant -= 2.5 × ha'
+  - step: frontend_toast
+    message: 🥔 Défanage {method} effectué ! Récolte possible dans 7j
+  depends_on:
+  - F038
+  tests:
+  - GIVEN pdt 85%, broyeur WHEN defane mechanical THEN defaned
+  - GIVEN pdt 85%, pulverisateur, desherbant, no wind WHEN defane chemical THEN defaned
+  - GIVEN wind active WHEN defane chemical THEN 400 vent trop fort
+  - GIVEN pdt 60% THEN 400 trop tôt
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:broyeur|pulverisateur
+  - fuel:hvc
+- id: F103
+  name: Semer couvert végétal (CIPAN)
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Semer couvert {cost} €
+    page: /parcels/:id
+    states:
+      active: parcel.status='fallow' AND season IN ('summer','autumn') AND has_semoir AND ht_ok AND hvc_ok
+      disabled:
+      - condition: not fallow
+        tooltip: Parcelle non en jachère
+      - condition: wrong season
+        tooltip: Couverts végétaux semés en été/automne uniquement
+      - condition: no semoir
+        tooltip: Semoir requis
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - INSERT crop (type='couvert_vegetal', status='growing')
+    - UPDATE parcel status='sown'
+    - UPDATE player balance -= seed_cost, ht, vehicle wear, inventory hvc
+    - INSERT ledger
+  - step: frontend_toast
+    message: 🌿 Couvert végétal semé ! Broyage au printemps → bonus rendement +5%
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F041
+  tests:
+  - GIVEN fallow, autumn, semoir WHEN sow cover THEN cover growing
+  - GIVEN spring THEN 400 mauvaise saison
+  - GIVEN cover broyé avant semis printemps THEN yield × 1.05
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:semoir
+  - fuel:hvc
+  - stock:semences_couvert
+- id: F104
+  name: Voir notifications
+  sprint: 4
+  status: spec
+  trigger:
+    type: navigation
+    page: /notifications
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/notifications?page=1&limit=50
+  - step: frontend_render
+    components:
+    - NotificationList
+    - NotificationFilters
+  depends_on: []
+  tests:
+  - GIVEN player with 10 notifications WHEN GET THEN paginated list
+  requires: []
+- id: F105
+  name: Configurer préférences notifications
+  sprint: 9
+  status: spec
+  trigger:
+    type: button
+    label: Enregistrer
+    page: /settings/notifications
+    states:
+      active: true
+      disabled:
+      - condition: no changes
+        tooltip: Aucune modification à enregistrer
+  chain:
+  - step: api_call
+    method: PUT
+    route: /api/player/notification-preferences
+    body: '{ alerts_hvc, alerts_health, alerts_finance, alerts_harvest }'
+  - step: backend_update
+    sql: UPDATE player_settings SET notification_prefs = $prefs
+  - step: frontend_toast
+    message: ✅ Préférences sauvegardées
+  depends_on: []
+  tests:
+  - GIVEN valid prefs WHEN PUT THEN saved
+  requires: []
+- id: F106
+  name: Voir énergie bâtiments
+  sprint: 8
+  status: spec
+  trigger:
+    type: navigation
+    page: /buildings/energy
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/buildings/energy
+  - step: frontend_render
+    components:
+    - EnergyTable (bâtiment, niveau, conso kWh/mois, coût €/mois)
+    - EnergyTotal
+  depends_on:
+  - F001
+  tests:
+  - GIVEN 3 buildings WHEN GET THEN energy breakdown
+  requires: []
+- id: F107
+  name: Changer type de sol bâtiment
+  sprint: 5
+  status: spec
+  trigger:
+    type: button
+    label: Passer en {target_floor}
+    page: /buildings/:id
+    states:
+      active: building_empty AND balance >= cost AND ht >= 1.0
+      disabled:
+      - condition: building not empty
+        tooltip: Videz le bâtiment avant de changer le sol
+      - condition: building type incompatible
+        tooltip: Seuls stabulation, porcherie, chèvrerie et bergerie supportent le changement de sol
+      - condition: balance < cost
+        tooltip: Solde insuffisant
+  chain:
+  - step: generate_idempotency_key
+  - step: frontend_confirm_modal
+    warnings:
+    - 'Litière → caillebotis : lisier au lieu de fumier'
+    - 'Caillebotis → litière : fumier au lieu de lisier'
+  - step: backend_transaction
+    sql:
+    - CHECK building is empty
+    - UPDATE building SET floor_type = $target
+    - UPDATE player balance -= cost, ht -= 1.0
+    - INSERT ledger
+  - step: frontend_toast
+    message: 🏗️ Sol changé en {floor_type} !
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F001
+  tests:
+  - GIVEN empty stabulation litiere WHEN switch THEN floor_type=caillebotis
+  - GIVEN building with animals THEN 400
+  requires:
+  - building:stabulation|porcherie|chevrerie|bergerie
+- id: F108
+  name: Créer appel d'offres
+  sprint: 13
+  status: spec
+  trigger:
+    type: button
+    label: Publier appel d'offres
+    page: /market/tenders
+    states:
+      active: ht >= 0.5
+      disabled:
+      - condition: ht < 0.5
+        tooltip: HT insuffisants (besoin 0.5)
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/tenders
+    body: '{ product, quantity, max_price_per_unit, deadline_days }'
+  - step: backend_transaction
+    sql:
+    - INSERT INTO player_contract (type='tender', status='open')
+    - UPDATE player ht -= 0.5
+  - step: frontend_toast
+    message: 📋 Appel d'offres publié !
+  depends_on: []
+  tests:
+  - GIVEN valid tender WHEN publish THEN open
+  requires: []
+- id: F109
+  name: Répondre à un appel d'offres
+  sprint: 13
+  status: spec
+  trigger:
+    type: button
+    label: Proposer {price} €
+    page: /market/tenders/:id
+    states:
+      active: stock >= quantity AND ht >= 0.5
+      disabled:
+      - condition: stock insufficient
+        tooltip: Stock insuffisant
+      - condition: own tender
+        tooltip: Vous ne pouvez pas répondre à votre propre AO
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - INSERT INTO player_contract_delivery (tender_id, seller_id, price, quantity)
+  - step: frontend_toast
+    message: 📋 Proposition envoyée !
+  depends_on:
+  - F108
+  tests:
+  - GIVEN valid stock WHEN respond THEN proposal created
+  - GIVEN own tender THEN 400
+  requires: []
+- id: F110
+  name: Tick primes PAC
+  sprint: 10
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 20
+    condition: 1er du mois Cultivia, si cultures éligibles
+  chain:
+  - step: worker_query
+    sql: SELECT player_id, SUM(ha), crop_types FROM parcel JOIN crop GROUP BY player_id
+  - step: worker_calculate
+    logic: prime = base_per_ha × total_ha × eligibility. Haies = bonus +5%.
+  - step: worker_update
+    sql: UPDATE player balance += prime. INSERT ledger (category='subsidy')
+  - step: worker_notify
+    events:
+    - 💰 Prime PAC versée — {amount}€ pour {ha}ha
+  depends_on: []
+  tests:
+  - GIVEN 50ha blé WHEN tick THEN prime versée
+  - GIVEN 50ha blé + haie THEN prime × 1.05
+  requires: []
+- id: F111
+  name: Tick notification email alertes critiques
+  sprint: 9
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 21
+    condition: quotidien, si alertes critiques et joueur opt-in
+  chain:
+  - step: worker_query
+    sql: SELECT p.id, p.email, ps.email_alerts FROM player p JOIN player_settings ps ON ps.player_id=p.id WHERE ps.email_alerts=true
+  - step: worker_check_critical
+    logic: 'Pour chaque joueur opt-in, vérifier : animal health<=20, stock aliments < 1 jour, HVC < 10L, solde < -20000. Si au moins 1 alerte critique → envoyer email.'
+  - step: worker_send_email
+    logic: 'Email : sujet "⚠️ Cultivia — Alertes sur votre ferme", corps : liste des alertes critiques, lien vers le dashboard. Max 1 email/jour/joueur.'
+  depends_on: []
+  tests:
+  - GIVEN player opt-in, animal health=15 THEN email sent
+  - GIVEN player opt-out THEN no email
+  - GIVEN no critical alerts THEN no email
+  - GIVEN email already sent today THEN no duplicate
+  requires: []
+- id: F112
+  name: Tutoriel onboarding
+  sprint: 2
+  status: spec
+  trigger:
+    type: navigation
+    page: /tutorial
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/tutorial/status
+  - step: frontend_render
+    components:
+    - TutorialStepper (5 étapes adaptées au kit)
+    - Kit éleveur → 1.Nourrir 2.Abreuver 3.Traire 4.Vendre lait 5.ETA
+    - Kit cultivateur → 1.Acheter parcelle 2.Préparer sol 3.Semer 4.Récolter 5.ETA
+    - Kit polyvalent → 1.Nourrir 2.Acheter parcelle 3.Semer 4.Traire 5.ETA
+  depends_on: []
+  tests:
+  - GIVEN new player WHEN GET /tutorial THEN 5 steps for their kit
+  - GIVEN step completed WHEN mark THEN progress saved
+  requires: []
+- id: F113
+  name: Agrandir un bâtiment
+  sprint: 4
+  status: spec
+  trigger:
+    type: button
+    label: Agrandir +{size} {unit} — {cost} €
+    page: /buildings/:id
+    states:
+      active: building_owned AND balance >= cost AND ht >= 1.0
+      disabled:
+      - condition: balance < cost
+        tooltip: Solde insuffisant
+      - condition: ht < 1.0
+        tooltip: HT insuffisants
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/buildings/:id/expand
+    body: '{ additional_size: number }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - SELECT size, level FROM building FOR UPDATE
+    - new_cost = additional_size × price_per_unit × level_factor
+    - UPDATE building SET size = size + additional_size
+    - UPDATE building_animal_capacity SET max_capacity = recalculated
+    - UPDATE player balance -= cost, ht -= 1.0
+    - INSERT ledger
+  - step: frontend_toast
+    message: 🏗️ {type} agrandi ! {old_size} → {new_size} {unit}
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F001
+  tests:
+  - GIVEN stabulation 100m² WHEN expand +50m² THEN size=150m², capacity increased
+  - GIVEN salle traite 4 postes WHEN expand +4 THEN 8 postes
+  - GIVEN balance < cost THEN 400
+  requires:
+  - building:any
+- id: F114
+  name: Voir historique production animal
+  sprint: 7
+  status: spec
+  trigger:
+    type: navigation
+    page: /animals/:id/history
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/animals/:id/production-history?months=12
+  - step: frontend_render
+    components:
+    - ProductionChart (lait/jour, œufs/jour, poids, laine)
+    - ProductionTable (date, quantité, qualité)
+  depends_on:
+  - F004
+  tests:
+  - GIVEN cow with 6 months milk data WHEN GET THEN chart + table
+  requires:
+  - animal:any
+- id: F115
+  name: Voir historique rendement parcelle
+  sprint: 10
+  status: spec
+  trigger:
+    type: navigation
+    page: /parcels/:id/history
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/parcels/:id/yield-history
+  - step: frontend_render
+    components:
+    - YieldChart (rendement/ha par saison, culture)
+    - YieldTable (saison, culture, rendement, qualité, prix vente)
+  depends_on:
+  - F035
+  tests:
+  - GIVEN parcel with 3 harvests WHEN GET THEN history displayed
+  requires:
+  - parcel
+- id: F116
+  name: Voir P&L mensuel
+  sprint: 9
+  status: spec
+  trigger:
+    type: navigation
+    page: /finances/pnl
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/finances/pnl?months=12
+  - step: frontend_render
+    components:
+    - PnlChart (revenus vs charges par mois, barres empilées)
+    - PnlTable (mois, revenus par catégorie, charges par catégorie, marge)
+    - PnlByActivity (élevage vs cultures vs autre)
+  depends_on: []
+  tests:
+  - GIVEN player with 6 months activity WHEN GET THEN P&L breakdown
+  requires: []
+- id: F117
+  name: Créer un lot d'animaux
+  sprint: 3
+  status: spec
+  trigger:
+    type: button
+    label: Créer lot ({count} animaux)
+    page: /animals (sélection multiple)
+    states:
+      active: selected_animals >= 2 AND same_species AND same_building
+      disabled:
+      - condition: less than 2 selected
+        tooltip: Sélectionnez au moins 2 animaux
+      - condition: different species
+        tooltip: Tous les animaux doivent être de la même espèce
+      - condition: different building
+        tooltip: Tous les animaux doivent être dans le même bâtiment
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animal-lots
+    body: '{ name: string, animal_ids: uuid[] }'
+  - step: backend_idempotency_check
+  - step: backend_transaction
+    sql:
+    - CHECK all same species AND same building AND owned
+    - INSERT INTO animal_lot (player_id, name, species, building_id)
+    - UPDATE animal SET lot_id = $lot_id WHERE id IN ($animal_ids)
+  - step: frontend_toast
+    message: 📦 Lot "{name}" créé ({count} animaux)
+  depends_on:
+  - F002
+  tests:
+  - GIVEN 5 vaches même stabulation WHEN create lot THEN lot created
+  - GIVEN 2 espèces différentes THEN 400
+  - GIVEN 2 bâtiments différents THEN 400
+  requires:
+  - animal:any
+- id: F118
+  name: Fusionner deux lots
+  sprint: 3
+  status: spec
+  trigger:
+    type: button
+    label: Fusionner dans {lot_target}
+    page: /animals (groupement lot)
+    states:
+      active: two_lots_selected AND same_species AND same_building
+      disabled:
+      - condition: different species
+        tooltip: Les deux lots doivent être de la même espèce
+      - condition: different building
+        tooltip: Les deux lots doivent être dans le même bâtiment
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - UPDATE animal SET lot_id = $target_lot_id WHERE lot_id = $source_lot_id
+    - DELETE FROM animal_lot WHERE id = $source_lot_id
+  - step: frontend_toast
+    message: 📦 Lots fusionnés → "{target_name}" ({count} animaux)
+  depends_on:
+  - F117
+  tests:
+  - GIVEN lot A (5) + lot B (3) same building WHEN merge THEN lot A (8), lot B deleted
+  requires:
+  - animal:any
+- id: F119
+  name: Dissocier des animaux d'un lot
+  sprint: 3
+  status: spec
+  trigger:
+    type: button
+    label: Retirer du lot ({count})
+    page: /animals (sélection dans lot) (sélection animaux)
+    states:
+      active: selected_animals >= 1
+      disabled:
+      - condition: none selected
+        tooltip: Sélectionnez les animaux à retirer
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/animal-lots/:id/remove
+    body: '{ animal_ids: uuid[], new_lot_name?: string }'
+  - step: backend_transaction
+    sql:
+    - 'If new_lot_name: INSERT new lot, UPDATE animals lot_id = new_lot'
+    - 'If no new_lot_name: UPDATE animal SET lot_id = NULL (individuels)'
+    - 'If source lot empty: DELETE animal_lot'
+  - step: frontend_toast
+    message: 📦 {count} animaux retirés du lot "{name}"
+  depends_on:
+  - F117
+  tests:
+  - GIVEN lot 8 animals, remove 3 → new lot THEN lot A (5), lot B (3)
+  - GIVEN lot 8 animals, remove 3 → individuels THEN lot A (5), 3 sans lot
+  - GIVEN remove all → lot deleted
+  requires:
+  - animal:any
+- id: F120
+  name: Voir mes lots (intégré dans /animals)
+  sprint: 3
+  status: spec
+  note: Fusionné dans F003. La page /animals affiche les lots via groupement. Pas de page séparée.
+  trigger:
+    type: navigation
+    page: /animals
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/animal-lots
+  - step: frontend_render
+    components:
+    - LotList (nom, espèce, count, bâtiment, actions)
+    - LotCard (résumé santé, nourri, production moyenne)
+  depends_on:
+  - F117
+  tests:
+  - GIVEN 3 lots WHEN GET THEN list with 3 entries
+  requires: []
+- id: F121
+  name: Voir inventaire complet
+  sprint: 4
+  status: spec
+  trigger:
+    type: navigation
+    page: /inventory
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/inventory
+  - step: frontend_render
+    components:
+    - InventoryTable (produit, quantité, capacité, pct, bâtiment)
+    - InventoryCategories (Aliments, Récoltes, Intrants, Carburant, Productions)
+  depends_on: []
+  tests:
+  - GIVEN player with stocks WHEN GET THEN all listed by category
+  requires: []
+- id: F122
+  name: Sevrage automatique
+  sprint: 6
+  status: spec
+  trigger:
+    type: worker_tick
+    step: 22
+    condition: nursing_until <= NOW()
+  chain:
+  - step: worker_query
+    sql: SELECT * FROM animal WHERE is_nursing=true AND nursing_until <= NOW()
+  - step: worker_update
+    sql: UPDATE animal SET is_nursing=false
+  - step: worker_notify
+    events:
+    - 🐄 {count} animaux sevrés
+  depends_on:
+  - F020
+  tests:
+  - GIVEN calf nursing_until=today THEN is_nursing=false
+  requires: []
+- id: F123
+  name: Voir carnet de santé animal
+  sprint: 5
+  status: spec
+  trigger:
+    type: navigation
+    page: /animals/:id/health
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/animals/:id/health-history
+  - step: frontend_render
+    components:
+    - HealthTimeline (date, événement, détail)
+    - HealthChart (santé sur 84j)
+  depends_on:
+  - F004
+  tests:
+  - GIVEN animal with health events WHEN GET THEN timeline
+  requires: []
+- id: F124
+  name: Peser un animal
+  sprint: 14
+  status: spec
+  trigger:
+    type: button
+    label: Peser
+    page: /animals/:id
+    states:
+      active: animal_owned AND ht >= 0.2
+      disabled:
+      - condition: ht < 0.2
+        tooltip: HT insuffisants
+  chain:
+  - step: backend_transaction
+    sql:
+    - UPDATE animal SET last_weighed_at=NOW(), recorded_weight=calculated_weight
+    - UPDATE player ht -= 0.2
+  - step: frontend_toast
+    message: ⚖️ {name} pèse {weight} kg
+  depends_on:
+  - F004
+  tests:
+  - GIVEN animal WHEN weigh THEN recorded_weight updated
+  requires:
+  - animal:any
+- id: F125
+  name: Castrer un mâle
+  sprint: 14
+  status: spec
+  trigger:
+    type: button
+    label: Castrer {cost} €
+    page: /animals/:id
+    states:
+      active: animal.sex='male' AND NOT castrated AND balance >= cost AND ht >= 0.5
+      disabled:
+      - condition: female
+        tooltip: Seuls les mâles peuvent être castrés
+      - condition: already castrated
+        tooltip: Déjà castré
+  chain:
+  - step: generate_idempotency_key
+  - step: frontend_confirm_modal
+    warnings:
+    - Irréversible — l'animal ne pourra plus se reproduire
+  - step: backend_transaction
+    sql:
+    - UPDATE animal SET is_castrated=true
+    - UPDATE player balance -= cost, ht -= 0.5
+    - INSERT ledger
+  - step: frontend_toast
+    message: ✂️ {name} castré — ne peut plus inséminer
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F004
+  tests:
+  - GIVEN male not castrated WHEN castrate THEN is_castrated=true
+  - GIVEN female THEN 400
+  requires:
+  - animal:male
+- id: F126
+  name: Réformer un animal
+  sprint: 14
+  status: spec
+  trigger:
+    type: button
+    label: Réformer
+    page: /animals/:id
+    states:
+      active: animal_owned AND NOT reformed
+      disabled:
+      - condition: already reformed
+        tooltip: Déjà réformé
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - UPDATE animal SET is_reformed=true
+  - step: frontend_toast
+    message: 🏷️ {name} réformé — retiré de la reproduction
+  depends_on:
+  - F004
+  tests:
+  - GIVEN animal WHEN reform THEN is_reformed=true, cannot inseminate
+  requires:
+  - animal:any
+- id: F127
+  name: Atteler outil au tracteur (combiné)
+  sprint: 14
+  status: spec
+  trigger:
+    type: button
+    label: Atteler {outil}
+    page: /equipment/:id (tracteur)
+    states:
+      active: tractor AND tool_compatible AND NOT already_attached
+      disabled:
+      - condition: not a tractor
+        tooltip: Seuls les tracteurs peuvent atteler
+      - condition: tool incompatible
+        tooltip: Cet outil nécessite {min_power} CV (tracteur = {power} CV)
+      - condition: already attached
+        tooltip: Dételer d'abord l'outil actuel
+  chain:
+  - step: backend_transaction
+    sql:
+    - UPDATE vehicle SET attached_to=$tractor_id WHERE id=$tool_id
+  - step: frontend_toast
+    message: 🔗 {tool} attelé au {tractor}
+  depends_on:
+  - F043
+  tests:
+  - GIVEN tractor 100CV, charrue 80CV min WHEN attach THEN attached
+  - GIVEN tractor 50CV, charrue 80CV min THEN 400 puissance insuffisante
+  requires:
+  - vehicle:tractor
+- id: F128
+  name: Drainage parcelle
+  sprint: 14
+  status: spec
+  trigger:
+    type: button
+    label: Drainer {cost} €
+    page: /parcels/:id
+    states:
+      active: parcel_owned AND NOT drained AND balance >= cost AND ht >= 2.0
+      disabled:
+      - condition: already drained
+        tooltip: Parcelle déjà drainée
+      - condition: balance < cost
+        tooltip: Solde insuffisant
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - UPDATE parcel SET is_drained=true
+    - UPDATE parcel_soil SET drainage_bonus=true
+    - UPDATE player balance -= cost, ht -= 2.0
+    - INSERT ledger
+  - step: frontend_toast
+    message: 💧 Parcelle drainée — meilleur rendement en zone humide
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F035
+  tests:
+  - GIVEN undrained parcel WHEN drain THEN is_drained=true
+  requires:
+  - parcel
+- id: F129
+  name: Chauler une parcelle
+  sprint: 14
+  status: spec
+  trigger:
+    type: button
+    label: Chauler {cost} €
+    page: /parcels/:id
+    states:
+      active: parcel_owned AND has_epandeur AND balance >= cost AND ht_ok AND hvc_ok
+      disabled:
+      - condition: recently limed
+        tooltip: Chaulage déjà effectué (prochain dans {years} ans)
+      - condition: no epandeur
+        tooltip: Épandeur requis
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - UPDATE parcel_soil SET calcium += amount, ph += correction, last_limed_at=NOW()
+    - UPDATE player balance -= cost, ht
+    - UPDATE vehicle wear, inventory hvc
+    - INSERT ledger
+  - step: frontend_toast
+    message: ite Chaulage effectué — pH corrigé, calcium rechargé
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F035
+  tests:
+  - GIVEN parcel pH 5.5 WHEN lime THEN pH += correction
+  - GIVEN recently limed THEN 400
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:epandeur_engrais
+  - fuel:hvc
+- id: F130
+  name: Clôturer un pré
+  sprint: 14
+  status: spec
+  trigger:
+    type: button
+    label: Clôturer {cost} €
+    page: /parcels/:id (pré)
+    states:
+      active: parcel.type='pre' AND NOT fenced AND balance >= cost AND ht >= 1.0
+      disabled:
+      - condition: already fenced
+        tooltip: Pré déjà clôturé
+      - condition: not a pre
+        tooltip: Seuls les prés peuvent être clôturés
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - UPDATE parcel SET is_fenced=true
+    - UPDATE player balance -= cost, ht -= 1.0
+    - INSERT ledger
+  - step: frontend_toast
+    message: 🏗️ Pré clôturé — prêt à accueillir des animaux
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F035
+  tests:
+  - GIVEN unfenced pre WHEN fence THEN is_fenced=true
+  requires:
+  - parcel:pre
+- id: F131
+  name: Voir plan de ferme
+  sprint: 15
+  status: spec
+  trigger:
+    type: navigation
+    page: /farm/map
+  chain:
+  - step: api_call
+    method: GET
+    route: /api/farm/map
+  - step: frontend_render
+    components:
+    - FarmMap (bâtiments positionnés, parcelles avec état, véhicules)
+  depends_on: []
+  tests:
+  - GIVEN player with buildings+parcels WHEN GET THEN map rendered
+  requires: []
+- id: F132
+  name: Relevage avant (combiné double outil)
+  sprint: 14
+  status: spec
+  trigger:
+    type: button
+    label: Atteler avant {outil}
+    page: /equipment/:id (tracteur >= 50CV)
+    states:
+      active: tractor.power >= 50 AND has_relevage_avant AND front_tool_compatible
+      disabled:
+      - condition: power < 50CV
+        tooltip: Puissance minimum 50 CV pour le relevage avant
+      - condition: no relevage avant installed
+        tooltip: Installez d'abord un relevage avant
+  chain:
+  - step: backend_transaction
+    sql:
+    - UPDATE vehicle SET front_attached_to=$tool_id WHERE id=$tractor_id
+  - step: frontend_toast
+    message: 🔗 {tool} attelé à l'avant — combiné actif
+  depends_on:
+  - F127
+  tests:
+  - GIVEN tractor 100CV + relevage WHEN attach front THEN front_attached
+  - GIVEN tractor 40CV THEN 400 puissance insuffisante
+  requires:
+  - vehicle:tractor
+- id: F133
+  name: Tarir une vache
+  sprint: 7
+  status: spec
+  trigger:
+    type: button
+    label: Tarir (arrêt traite)
+    page: /animals/:id
+    states:
+      active: is_lactating AND pregnant AND due_in < 14 days
+      disabled:
+      - condition: not lactating
+        tooltip: Pas en lactation
+      - condition: not pregnant
+        tooltip: Pas gestante
+      - condition: due_in > 14 days
+        tooltip: Trop tôt (tarissement 2 mois avant mise bas)
+  chain:
+  - step: backend_transaction
+    sql:
+    - UPDATE animal SET is_lactating=false, is_dried_off=true
+  - step: frontend_toast
+    message: 🐄 {name} tarie — arrêt traite jusqu'à la mise bas
+  depends_on:
+  - F023
+  tests:
+  - GIVEN lactating pregnant due in 10d WHEN dry off THEN is_dried_off=true
+  - GIVEN not pregnant THEN 400
+  requires:
+  - animal:vache_laitiere
+- id: F134
+  name: Retourner le lin (séchage)
+  sprint: 11
+  status: spec
+  trigger:
+    type: button
+    label: Retourner le lin
+    page: /parcels/:id
+    states:
+      active: crop.type='lin' AND crop.status='harvested_phase1' AND has_retourneuse AND ht_ok
+      disabled:
+      - condition: not lin
+        tooltip: Réservé au lin
+      - condition: wrong phase
+        tooltip: Le lin doit d'abord être arraché
+      - condition: no retourneuse
+        tooltip: Retourneuse requise
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - UPDATE crop SET status='drying'
+    - UPDATE player ht, vehicle wear, inventory hvc
+  - step: frontend_toast
+    message: 🌿 Lin retourné — séchage en cours (2 mois)
+  depends_on:
+  - F041
+  tests:
+  - GIVEN lin harvested_phase1, retourneuse WHEN turn THEN status=drying
+  requires:
+  - parcel
+  - vehicle:tractor
+  - vehicle:retourneuse_lin
+  - fuel:hvc
+- id: F135
+  name: Achat matériel en commun (CUMA)
+  sprint: 15
+  status: spec
+  trigger:
+    type: button
+    label: Proposer achat commun
+    page: /equipment/shop
+    states:
+      active: has_friends_same_region AND vehicle_selected
+      disabled:
+      - condition: no friends in region
+        tooltip: Vous devez avoir des amis dans votre région
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/vehicles/cuma
+    body: '{ vehicle_type_id, friend_ids: uuid[], my_share_pct: number }'
+  - step: backend_transaction
+    sql:
+    - CHECK all friends in same region, max 5 participants
+    - INSERT shared_vehicle (owner_ids, shares, usage_hours_per_player)
+    - Debit each player proportionally
+  - step: frontend_toast
+    message: 🤝 Achat commun proposé — en attente de validation des {count} participants
+  depends_on:
+  - F043
+  - F094
+  tests:
+  - GIVEN 3 friends same region WHEN propose THEN pending validation
+  - GIVEN friend different region THEN 400
+  requires: []
+- id: F136
+  name: Négocier prix matériel occasion
+  sprint: 15
+  status: spec
+  trigger:
+    type: button
+    label: Proposer {prix} €
+    page: /equipment/market/:id
+    states:
+      active: listing_active AND NOT own_listing
+      disabled:
+      - condition: own listing
+        tooltip: Vous ne pouvez pas négocier votre propre annonce
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/vehicles/negotiate
+    body: '{ listing_id, proposed_price: number }'
+  - step: backend_transaction
+    sql:
+    - INSERT INTO negotiation (listing_id, buyer_id, proposed_price, status='pending')
+    - Notify seller via WS
+  - step: frontend_toast
+    message: 💬 Offre de {prix}€ envoyée au vendeur
+  depends_on:
+  - F064
+  tests:
+  - GIVEN listing active WHEN negotiate THEN offer sent
+  - GIVEN own listing THEN 400
+  requires: []
+- id: F137
+  name: Créer une CAR
+  sprint: 13
+  status: spec
+  trigger:
+    type: button
+    label: Créer une coopérative
+    page: /cooperatives/create
+    states:
+      active: NOT member_of_car AND balance >= 5000 AND ht >= 2.0
+      disabled:
+      - condition: already member
+        tooltip: Quittez votre CAR actuelle d'abord
+      - condition: balance < 5000
+        tooltip: Capital minimum 5 000€ requis
+  chain:
+  - step: generate_idempotency_key
+  - step: api_call
+    method: POST
+    route: /api/cooperatives
+    body: '{ name: string, region_id: int }'
+  - step: backend_transaction
+    sql:
+    - INSERT INTO cooperative (name, region_id, founder_id)
+    - INSERT INTO coop_member (player_id, cooperative_id, role='president')
+    - UPDATE player balance -= 5000, ht -= 2.0
+    - INSERT ledger
+  - step: frontend_toast
+    message: 🤝 CAR "{name}" créée ! Vous en êtes le président.
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on: []
+  tests:
+  - GIVEN not member, 5000€ WHEN create THEN CAR created, player=president
+  - GIVEN already member THEN 400
+  requires: []
+- id: F138
+  name: Vermifuger un animal
+  sprint: 5
+  status: spec
+  trigger:
+    type: button
+    label: Vermifuger {cost} €
+    page: /animals/:id
+    states:
+      active: animal_owned AND NOT recently_dewormed AND balance >= cost AND ht >= 0.3
+      disabled:
+      - condition: recently dewormed
+        tooltip: Déjà vermifugé (prochain dans {days}j)
+      - condition: balance < cost
+        tooltip: Solde insuffisant
+  chain:
+  - step: generate_idempotency_key
+  - step: backend_transaction
+    sql:
+    - UPDATE animal SET last_dewormed_at=NOW()
+    - UPDATE player balance -= cost, ht -= 0.3
+    - INSERT INTO animal_health_log (type='deworm')
+    - INSERT ledger
+  - step: frontend_toast
+    message: 💊 {name} vermifugé ! Protection 42j
+  - step: frontend_animate_header
+    fields:
+    - balance
+    - ht
+  depends_on:
+  - F004
+  tests:
+  - GIVEN animal not dewormed WHEN deworm THEN last_dewormed_at=NOW()
+  - GIVEN recently dewormed THEN 400
+  requires:
+  - animal:any
+dependency_graph:
+  F001: []
+  F002:
+  - F001
+  F003:
+  - F002
+  F004:
+  - F002
+  F005:
+  - F004
+  F006:
+  - F001
+  F007:
+  - F001
+  F008:
+  - F002
+  - F006
+  F009:
+  - F007
+  - F002
+  F010:
+  - F008
+  F011:
+  - F008
+  F012:
+  - F011
+  F013:
+  - F012
+  F014:
+  - F004
+  F015:
+  - F006
+  F016:
+  - F001
+  F017:
+  - F001
+  F018:
+  - F004
+  F019:
+  - F018
+  F020:
+  - F018
+  F021:
+  - F020
+  - F001
+  F022:
+  - F004
+  F023:
+  - F020
+  - F001
+  F024:
+  - F023
+  F025:
+  - F004
+  F026: []
+  F027: []
+  F028:
+  - F027
+  F029:
+  - F004
+  - F001
+  F030: []
+  F031:
+  - F002
+  - F003
+  F032: []
+  F033: []
+  F034: []
+  F035: []
+  F036:
+  - F035
+  F037:
+  - F035
+  F038:
+  - F037
+  F039:
+  - F038
+  - F006
+  F040:
+  - F038
+  F041:
+  - F038
+  F042:
+  - F041
+  F043: []
+  F044:
+  - F043
+  F045:
+  - F043
+  F046:
+  - F035
+  F047:
+  - F043
+  F048:
+  - F002
+  F049:
+  - F043
+  F050:
+  - F006
+  F051:
+  - F007
+  - F029
+  F052:
+  - F015
+  - F016
+  - F017
+  F053:
+  - F009
+  F054:
+  - F038
+  F055:
+  - F035
+  F056:
+  - F035
+  F057:
+  - F035
+  F058:
+  - F057
+  F059:
+  - F041
+  F060:
+  - F041
+  F061:
+  - F043
+  F062:
+  - F043
+  F063:
+  - F062
+  F064:
+  - F043
+  F065:
+  - F032
+  F066:
+  - F032
+  F067:
+  - F027
+  - F033
+  F068:
+  - F001
+  F069:
+  - F001
+  F070:
+  - F001
+  F071:
+  - F002
+  F072:
+  - F001
+  F073: []
+  F074: []
+  F075:
+  - F015
+  F076: []
+  F077: []
+  F078:
+  - F016
+  F079:
+  - F033
+  F080:
+  - F002
+  F081:
+  - F080
+  F082:
+  - F004
+  F083:
+  - F004
+  F084:
+  - F038
+  F085:
+  - F038
+  F086:
+  - F035
+  F087:
+  - F035
+  F088:
+  - F035
+  F089:
+  - F043
+  F090:
+  - F043
+  F091: []
+  F092:
+  - F023
+  F093: []
+  F094: []
+  F095: []
+  F096: []
+  F097: []
+  F098: []
+  F099:
+  - F082
+  F100:
+  - F083
+  F101:
+  - F038
+  F102:
+  - F038
+  F103:
+  - F041
+  F104: []
+  F105: []
+  F106:
+  - F001
+  F107:
+  - F001
+  F108: []
+  F109:
+  - F108
+  F110: []
+  F111: []
+  F112: []
+  F113:
+  - F001
+  F114:
+  - F004
+  F115:
+  - F035
+  F116: []
+  F117:
+  - F002
+  F118:
+  - F117
+  F119:
+  - F117
+  F120:
+  - F117
+  F121: []
+  F122:
+  - F020
+  F123:
+  - F004
+  F124:
+  - F004
+  F125:
+  - F004
+  F126:
+  - F004
+  F127:
+  - F043
+  F128:
+  - F035
+  F129:
+  - F035
+  F130:
+  - F035
+  F131: []
+  F132:
+  - F127
+  F133:
+  - F023
+  F134:
+  - F041
+  F135:
+  - F043
+  - F094
+  F136:
+  - F064
+  F137: []
+  F138:
+  - F004
+  F139:
+  - F035
+  F140:
+  - F001
+  F141: []
+  F142: []
+  F143: []
+  F144: []
+  F145: []
+  F146: []
+  F147: []
+  F148: []
+  F149: []
+  F150:
+  - F149
+  F151:
+  - F149
+  F152:
+  - F149
+  F153:
+  - F096
+  F154:
+  - F080
+  F155:
+  - F154
+  F156: []
+  F157:
+  - F001
+  F158:
+  - F157
+  - F023
+  F159: []
+  F160:
+  - F001
+  F161: []
+  F162: []
+  F163: []
+  F164: []
+  F165:
+  - F035
+  F166:
+  - F035
+  F167:
+  - F035
+  F168: []
+  F169: []
+  F170:
+  - F094
+  F171: []
+  F172: []
+  F173:
+  - F002
+  F174:
+  - F117
+  F175:
+  - F002
+  F176:
+  - F018
+  F177:
+  - F038
+  F178:
+  - F035
+  F179:
+  - F006
+  F180: []
+  F181:
+  - F001
+  F182:
+  - F043
+  F183:
+  - F047
+  F184:
+  - F001
+  F185:
+  - F093
+  F186: []
+  F187: []
+  F188: []
+  F189:
+  - F188
+  F190:
+  - F188
+  F191:
+  - F043
+  F192:
+  - F019
+  F193:
+  - F092
+  F194:
+  - F035
+  F195:
+  - F001
+  F196:
+  - F001
+  F197:
+  - F035
+  F198:
+  - F035
+  F199:
+  - F035
+stats:
+  total_flows: 199
+  by_sprint:
+    sprint_03: 9
+    sprint_04: 13
+    sprint_05: 8
+    sprint_06: 5
+    sprint_07: 7
+    sprint_08: 5
+    sprint_09: 9
+    sprint_10: 8
+    sprint_11: 12
+    sprint_12: 11
+    sprint_13: 5
+    sprint_14: 3
+    sprint_15: 1
+    sprint_16: 1
+  by_type:
+    button: 72
+    navigation: 12
+    inline_edit: 1
+    worker_tick: 13
+  by_status:
+    spec: 98

@@ -1,0 +1,1519 @@
+openapi: 3.0.3
+info:
+  title: Cultivia API
+  version: 0.1.0
+  description: 138 flows MVP
+servers:
+  - url: http://localhost:3001
+paths:
+  /api/buildings:
+    post:
+      summary: Construire un bâtiment
+      tags:
+        - F001
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ building_type_id: int, size: number, name: string }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+    get:
+      summary: Voir liste bâtiments
+      tags:
+        - F072
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/buy:
+    post:
+      summary: Acheter un animal au Marché Central
+      tags:
+        - F002
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ breed_id: int, life_stage: string, sex: string, building_id:
+                uuid }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals?species=cattle&page=1&limit=20:
+    get:
+      summary: Voir liste animaux
+      tags:
+        - F003
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/dashboard:
+    get:
+      summary: Voir liste animaux
+      tags:
+        - F003
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/:id:
+    get:
+      summary: Consulter fiche animal
+      tags:
+        - F004
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+    put:
+      summary: Renommer un animal
+      tags:
+        - F005
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ name: string }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/market/buy:
+    post:
+      summary: Acheter HVC (carburant)
+      tags:
+        - F068
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ product: 'hvc', quantity: number }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/buildings/:id/feed:
+    post:
+      summary: Nourrir animaux (manuel)
+      tags:
+        - F008
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ ration_id: int, method: 'manual'|'desilage' }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/buildings/:id/water:
+    post:
+      summary: Abreuver animaux
+      tags:
+        - F009
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/buildings/:id/auto-feed:
+    post:
+      summary: Configurer nourrissage automatique
+      tags:
+        - F010
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ ration_id: int, method: string }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/:id/heal:
+    post:
+      summary: Soigner un animal
+      tags:
+        - F012
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/batch-heal:
+    post:
+      summary: Soigner tous (batch)
+      tags:
+        - F013
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ animal_ids: [] }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/:id/vaccinate:
+    post:
+      summary: Vacciner un animal
+      tags:
+        - F014
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/buildings/:id/bedding:
+    post:
+      summary: Mettre de la paille
+      tags:
+        - F015
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ method: 'manual'|'pailleuse' }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/buildings/:id/manure:
+    post:
+      summary: Retirer le fumier
+      tags:
+        - F016
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/buildings/:id/slurry:
+    post:
+      summary: Retirer le lisier
+      tags:
+        - F017
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/:id/inseminate:
+    post:
+      summary: Inséminer (CIA)
+      tags:
+        - F019
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ method: 'cia', dose_id: uuid }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/auto-place:
+    post:
+      summary: Placer animal depuis arrivage
+      tags:
+        - F021
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/:id/pedigree?depth=3:
+    get:
+      summary: Voir arbre généalogique
+      tags:
+        - F022
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/milk:
+    post:
+      summary: Traire les vaches
+      tags:
+        - F023
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ animal_ids | all: true, slot: 1|2|3|4 }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/market/sell:
+    post:
+      summary: Vendre œufs au Marché Central
+      tags:
+        - F100
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ product: 'eggs', quantity, caliber: 'S'|'M'|'L'|'XL' }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/slaughter:
+    post:
+      summary: Vendre animal à l'abattoir
+      tags:
+        - F025
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ animal_ids }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/market/prices:
+    get:
+      summary: Voir cours du marché
+      tags:
+        - F026
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/employees:
+    post:
+      summary: Embaucher un employé
+      tags:
+        - F027
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ specialty, name }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/employees/:id:
+    delete:
+      summary: Licencier un employé
+      tags:
+        - F028
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/move:
+    post:
+      summary: Déplacer animal (bâtiment ou pré)
+      tags:
+        - F029
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ animal_ids, destination_type, destination_id }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/weather?prefecture_id={id}:
+    get:
+      summary: Voir météo
+      tags:
+        - F030
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/dashboard:
+    get:
+      summary: Voir dashboard complet
+      tags:
+        - F031
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/finances/savings:
+    post:
+      summary: Souscrire épargne
+      tags:
+        - F032
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ amount, duration_months }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/finances/loans:
+    post:
+      summary: Demander un prêt
+      tags:
+        - F033
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ amount, duration_months }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/messages:
+    post:
+      summary: Envoyer un message
+      tags:
+        - F034
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ to_player_id, subject, body }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/buy:
+    post:
+      summary: Acheter une parcelle
+      tags:
+        - F035
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ prefecture_id, type, size_ha }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/analyze-soil:
+    post:
+      summary: Analyser le sol
+      tags:
+        - F036
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/prepare:
+    post:
+      summary: Préparer sol (déchaumer/labourer/herser)
+      tags:
+        - F037
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ type: stubble|plow|harrow, technique: traditional|tcs|direct }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/sow:
+    post:
+      summary: Semer
+      tags:
+        - F038
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ seed_type_id, seed_quality: standard|certified }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/fertilize:
+    post:
+      summary: Épandre engrais
+      tags:
+        - F039
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ fertilizer_type, quantity_per_ha }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/treat:
+    post:
+      summary: Traiter (fongicide/herbicide/insecticide)
+      tags:
+        - F040
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ treatment_type }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/harvest:
+    post:
+      summary: Récolter
+      tags:
+        - F041
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/vehicles/buy:
+    post:
+      summary: Acheter matériel neuf
+      tags:
+        - F043
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ vehicle_type_id }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/vehicles/:id/maintain:
+    post:
+      summary: Entretenir matériel
+      tags:
+        - F044
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ type: monthly|annual }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/vehicles/:id/repair:
+    post:
+      summary: Réparer matériel en panne
+      tags:
+        - F045
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/eta/order:
+    post:
+      summary: Commander ETA Cultivia
+      tags:
+        - F046
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ parcel_id, work_type:
+                stubble|plow|harrow|sow|fertilize|treat|harvest|bine|roll|press\
+                |mulch|irrigate }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/vehicles/:id/sell:
+    post:
+      summary: Vendre matériel
+      tags:
+        - F047
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/fill-water:
+    post:
+      summary: Remplir bacs à eau au pré
+      tags:
+        - F051
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/roll:
+    post:
+      summary: Rouler une parcelle
+      tags:
+        - F054
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/spread-manure:
+    post:
+      summary: Épandre fumier sur parcelle
+      tags:
+        - F055
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/spread-slurry:
+    post:
+      summary: Épandre lisier sur parcelle
+      tags:
+        - F056
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/drill:
+    post:
+      summary: Forer une parcelle
+      tags:
+        - F057
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/irrigate:
+    post:
+      summary: Irriguer une parcelle
+      tags:
+        - F058
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ hours: 1-24 }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/press-straw:
+    post:
+      summary: Presser paille
+      tags:
+        - F059
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ bale_type: square_500|square_250|round_300 }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/mulch-straw:
+    post:
+      summary: Broyer paille
+      tags:
+        - F060
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/vehicles/:id/buy-piece:
+    post:
+      summary: Acheter pièce détachée
+      tags:
+        - F061
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ piece_num: int }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/vehicles/:id/insure:
+    post:
+      summary: Souscrire assurance matériel
+      tags:
+        - F062
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/buildings/:id/upgrade:
+    post:
+      summary: Améliorer un bâtiment
+      tags:
+        - F069
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/buildings/:id:
+    delete:
+      summary: Détruire un bâtiment
+      tags:
+        - F070
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/market/negociant/call:
+    post:
+      summary: Appeler le négociant en bestiaux
+      tags:
+        - F071
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/market/negociant/buy:
+    post:
+      summary: Appeler le négociant en bestiaux
+      tags:
+        - F071
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ offer_id, building_id }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/vehicles:
+    get:
+      summary: Voir liste matériel
+      tags:
+        - F073
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/finances/summary:
+    get:
+      summary: Voir finances
+      tags:
+        - F074
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/ledger?page=1&limit=20:
+    get:
+      summary: Voir finances
+      tags:
+        - F074
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/vehicles/:id/list-for-sale:
+    post:
+      summary: Vendre matériel entre joueurs
+      tags:
+        - F064
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ asking_price: number }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/savings/:id/close:
+    post:
+      summary: Clôturer épargne
+      tags:
+        - F065
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/compost/start:
+    post:
+      summary: Composter du fumier
+      tags:
+        - F078
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ quantity_tonnes: number }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/loans/:id/early-repay:
+    post:
+      summary: Rembourser prêt par anticipation
+      tags:
+        - F079
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/list-for-sale:
+    post:
+      summary: Vendre animal(aux) entre joueurs
+      tags:
+        - F080
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ animal_ids: uuid[], asking_price_per_unit: number }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/cooperatives:
+    get:
+      summary: Rejoindre une CAR
+      tags:
+        - F093
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+    post:
+      summary: Créer une CAR
+      tags:
+        - F137
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ name: string, region_id: int }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/rankings?type=general&page=1&department_id=optional:
+    get:
+      summary: Voir classements
+      tags:
+        - F095
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/players/:id/profile:
+    get:
+      summary: Voir fiche joueur
+      tags:
+        - F096
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/carcass-stats:
+    get:
+      summary: Voir statistiques carcasses
+      tags:
+        - F097
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/milk-quality:
+    get:
+      summary: Voir qualité lait détaillée
+      tags:
+        - F098
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/defane:
+    post:
+      summary: Défaner pommes de terre
+      tags:
+        - F102
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ method: 'mechanical'|'chemical' }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/notifications?page=1&limit=50:
+    get:
+      summary: Voir notifications
+      tags:
+        - F104
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/player/notification-preferences:
+    put:
+      summary: Configurer préférences notifications
+      tags:
+        - F105
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ alerts_hvc, alerts_health, alerts_finance, alerts_harvest }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/buildings/energy:
+    get:
+      summary: Voir énergie bâtiments
+      tags:
+        - F106
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/tenders:
+    post:
+      summary: Créer appel d'offres
+      tags:
+        - F108
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ product, quantity, max_price_per_unit, deadline_days }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/tutorial/status:
+    get:
+      summary: Tutoriel onboarding
+      tags:
+        - F112
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/buildings/:id/expand:
+    post:
+      summary: Agrandir un bâtiment
+      tags:
+        - F113
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ additional_size: number }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/:id/production-history?months=12:
+    get:
+      summary: Voir historique production animal
+      tags:
+        - F114
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/parcels/:id/yield-history:
+    get:
+      summary: Voir historique rendement parcelle
+      tags:
+        - F115
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/finances/pnl?months=12:
+    get:
+      summary: Voir P&L mensuel
+      tags:
+        - F116
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animal-lots:
+    post:
+      summary: Créer un lot d'animaux
+      tags:
+        - F117
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ name: string, animal_ids: uuid[] }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+    get:
+      summary: Voir mes lots
+      tags:
+        - F120
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animal-lots/:id/remove:
+    post:
+      summary: Dissocier des animaux d'un lot
+      tags:
+        - F119
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ animal_ids: uuid[], new_lot_name?: string }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/inventory:
+    get:
+      summary: Voir inventaire complet
+      tags:
+        - F121
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/animals/:id/health-history:
+    get:
+      summary: Voir carnet de santé animal
+      tags:
+        - F123
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/farm/map:
+    get:
+      summary: Voir plan de ferme
+      tags:
+        - F131
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/vehicles/cuma:
+    post:
+      summary: Achat matériel en commun (CUMA)
+      tags:
+        - F135
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ vehicle_type_id, friend_ids: uuid[], my_share_pct: number }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
+  /api/vehicles/negotiate:
+    post:
+      summary: Négocier prix matériel occasion
+      tags:
+        - F136
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              description: "{ listing_id, proposed_price: number }"
+      responses:
+        "200":
+          description: Succès
+        "400":
+          description: Erreur validation
+        "401":
+          description: Non authentifié
+        "403":
+          description: Non autorisé
